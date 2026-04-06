@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 interface TripFormData {
@@ -13,21 +13,33 @@ interface TripFormData {
   tripStyle: string;
 }
 
-const LOADING_STEPS = [
-  "Searching available flights...",
-  "Checking hotel availability...",
-  "Analysing weather conditions...",
-  "Calculating travel distances...",
-  "Discovering local highlights...",
-  "Crafting your itinerary...",
-];
+interface AgentStatus {
+  id: string;
+  label: string;
+  status: "pending" | "running" | "done" | "error";
+  startedAt?: number;
+  doneAt?: number;
+}
 
 const TRIP_STYLES = ["Adventure", "Cultural", "Relaxation", "Foodie", "Budget", "Luxury"];
 
+const AGENT_META: Record<string, { label: string; icon: string }> = {
+  resolver: { label: "Resolving destinations", icon: "⊕" },
+  flights_out: { label: "Outbound flights", icon: "✈" },
+  flights_ret: { label: "Return flights", icon: "✈" },
+  weather: { label: "Weather forecast", icon: "◈" },
+  content: { label: "Local highlights", icon: "◉" },
+  hotels: { label: "Hotel availability", icon: "◫" },
+  maps: { label: "Route validation", icon: "◎" },
+};
+
 export default function Home() {
   const router = useRouter();
-  const [loading, setLoading] = useState(false);
-  const [loadingStep, setLoadingStep] = useState(0);
+  const [phase, setPhase] = useState<"form" | "loading" | "streaming">("form");
+  const [agents, setAgents] = useState<AgentStatus[]>([]);
+  const [synthesisText, setSynthesisText] = useState("");
+  const [error, setError] = useState("");
+  const [formError, setFormError] = useState("");
   const [form, setForm] = useState<TripFormData>({
     origin: "",
     destination: "",
@@ -37,102 +49,169 @@ export default function Home() {
     budget: "",
     tripStyle: "",
   });
-  const [error, setError] = useState("");
+  const streamRef = useRef<string>("");
+  const readerRef = useRef<ReadableStreamDefaultReader | null>(null);
+  const streamBoxRef = useRef<HTMLPreElement>(null);
 
-  const handleChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
-  ) => {
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      readerRef.current?.cancel();
+    };
+  }, []);
+
+  // Auto-scroll stream box to bottom on every new chunk
+  useEffect(() => {
+    if (streamBoxRef.current) {
+      streamBoxRef.current.scrollTop = streamBoxRef.current.scrollHeight;
+    }
+  }, [synthesisText]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setForm((prev) => ({ ...prev, [name]: value }));
-    if (error) setError("");
+    if (formError) setFormError("");
   };
 
-  const handleStyleSelect = (style: string) => {
-    setForm((prev) => ({ ...prev, tripStyle: style }));
-  };
-
-  const validateForm = () => {
+  const validate = () => {
     if (!form.origin.trim()) return "Please enter your departure city.";
     if (!form.destination.trim()) return "Please enter your destination.";
-    if (!form.startDate) return "Please select a start date.";
-    if (!form.endDate) return "Please select an end date.";
+    if (!form.startDate) return "Please select a departure date.";
+    if (!form.endDate) return "Please select a return date.";
     if (new Date(form.endDate) <= new Date(form.startDate))
-      return "End date must be after start date.";
+      return "Return date must be after departure date.";
     return "";
-  };
-
-  const cycleLoadingSteps = () => {
-    let step = 0;
-    const interval = setInterval(() => {
-      step = (step + 1) % LOADING_STEPS.length;
-      setLoadingStep(step);
-    }, 2200);
-    return interval;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const validationError = validateForm();
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
+    const err = validate();
+    if (err) { setFormError(err); return; }
 
-    setLoading(true);
-    setLoadingStep(0);
-    const interval = cycleLoadingSteps();
+    setError("");
+    setSynthesisText("");
+    streamRef.current = "";
+    setAgents([]);
+    setPhase("loading");
 
     try {
-      const query = buildQuery(form);
-      const response = await fetch("/api/plan", {
+      const res = await fetch("/api/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, tripData: form }),
+        body: JSON.stringify({ tripData: form }),
       });
 
-      if (!response.ok) throw new Error("Failed to generate itinerary");
+      if (!res.ok || !res.body) throw new Error("Failed to connect to planning service.");
 
-      const data = await response.json();
-      clearInterval(interval);
+      const reader = res.body.getReader();
+      readerRef.current = reader;
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-      // store itinerary in sessionStorage for /itinerary page
-      sessionStorage.setItem("itinerary", JSON.stringify(data));
-      sessionStorage.setItem("tripData", JSON.stringify(form));
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
 
-      router.push("/itinerary");
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            handleSSEEvent(event);
+          } catch {
+            // malformed chunk, skip
+          }
+        }
+      }
     } catch (err) {
-      clearInterval(interval);
-      setLoading(false);
-      setError("Something went wrong. Please try again.");
-      console.error(err);
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+      setPhase("form");
     }
   };
 
-  const buildQuery = (f: TripFormData) => {
-    const days =
-      Math.ceil(
-        (new Date(f.endDate).getTime() - new Date(f.startDate).getTime()) /
-          (1000 * 60 * 60 * 24)
-      ) + 1;
+  const handleSSEEvent = (event: {
+    type: string;
+    agent?: string;
+    label?: string;
+    chunk?: string;
+    itinerary?: unknown;
+    message?: string;
+  }) => {
+    switch (event.type) {
+      case "agent_start":
+        if (!event.agent) break;
+        setAgents((prev) => {
+          if (prev.find((a) => a.id === event.agent)) return prev;
+          return [
+            ...prev,
+            {
+              id: event.agent!,
+              label: AGENT_META[event.agent!]?.label || event.label || event.agent!,
+              status: "running",
+              startedAt: Date.now(),
+            },
+          ];
+        });
+        break;
 
-    const parts = [
-      `Create a ${days}-day travel itinerary from ${f.origin} to ${f.destination}.`,
-      `Travel dates: ${f.startDate} to ${f.endDate}.`,
-      `Number of travellers: ${f.people}.`,
-      f.budget ? `Budget: ${f.budget}.` : "",
-      f.tripStyle ? `Trip style: ${f.tripStyle}.` : "",
-      `Use available tools to find real flights, hotels, weather forecasts, driving times between stops, and local highlights. Build a day-by-day plan anchored to actual flight arrival times.`,
-    ];
+      case "agent_done":
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.id === event.agent
+              ? { ...a, status: "done", doneAt: Date.now() }
+              : a
+          )
+        );
+        break;
 
-    return parts.filter(Boolean).join(" ");
+      case "agent_error":
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.id === event.agent ? { ...a, status: "error", doneAt: Date.now() } : a
+          )
+        );
+        break;
+
+      case "synthesis_start":
+        setPhase("streaming");
+        break;
+
+      case "synthesis_chunk":
+        if (event.chunk) {
+          streamRef.current += event.chunk;
+          setSynthesisText(streamRef.current);
+        }
+        break;
+
+      case "done":
+        if (event.itinerary) {
+          sessionStorage.setItem(
+            "itinerary",
+            JSON.stringify({ itinerary: event.itinerary, tripData: form, generatedAt: new Date().toISOString() })
+          );
+          sessionStorage.setItem("tripData", JSON.stringify(form));
+          router.push("/itinerary");
+        }
+        break;
+
+      case "error":
+        setError(event.message || "Planning failed.");
+        setPhase("form");
+        break;
+    }
   };
 
   const today = new Date().toISOString().split("T")[0];
+  const doneCount = agents.filter((a) => a.status === "done").length;
+  const totalAgents = Object.keys(AGENT_META).length;
 
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Sans:wght@300;400;500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Sans:wght@300;400;500&family=JetBrains+Mono:wght@300;400&display=swap');
 
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -142,22 +221,27 @@ export default function Home() {
           --navy-light: #1a2235;
           --amber: #d4913a;
           --amber-light: #e8aa5a;
-          --amber-dim: rgba(212, 145, 58, 0.15);
+          --amber-dim: rgba(212, 145, 58, 0.12);
+          --green: #4ade80;
+          --green-dim: rgba(74, 222, 128, 0.1);
+          --red: #f87171;
           --white: #f5f0e8;
           --muted: rgba(245, 240, 232, 0.45);
           --border: rgba(212, 145, 58, 0.2);
           --font-display: 'Cormorant Garamond', serif;
           --font-body: 'DM Sans', sans-serif;
+          --font-mono: 'JetBrains Mono', monospace;
         }
 
-        html, body { height: 100%; }
+        html, body { height: 100%; background: var(--navy); }
 
+        /* ── PAGE SHELL ── */
         .page {
           min-height: 100vh;
           background-color: var(--navy);
           background-image:
-            linear-gradient(rgba(212, 145, 58, 0.03) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(212, 145, 58, 0.03) 1px, transparent 1px);
+            linear-gradient(rgba(212,145,58,0.025) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(212,145,58,0.025) 1px, transparent 1px);
           background-size: 60px 60px;
           font-family: var(--font-body);
           color: var(--white);
@@ -173,26 +257,13 @@ export default function Home() {
         .page::before {
           content: '';
           position: fixed;
-          top: -30%;
-          left: -20%;
-          width: 70%;
-          height: 70%;
-          background: radial-gradient(ellipse, rgba(212, 145, 58, 0.07) 0%, transparent 70%);
+          top: -30%; left: -20%;
+          width: 70%; height: 70%;
+          background: radial-gradient(ellipse, rgba(212,145,58,0.06) 0%, transparent 70%);
           pointer-events: none;
         }
 
-        .page::after {
-          content: '';
-          position: fixed;
-          bottom: -20%;
-          right: -10%;
-          width: 50%;
-          height: 50%;
-          background: radial-gradient(ellipse, rgba(30, 60, 120, 0.15) 0%, transparent 70%);
-          pointer-events: none;
-        }
-
-        /* — HEADER — */
+        /* ── HEADER ── */
         .header {
           text-align: center;
           margin-bottom: 3.5rem;
@@ -210,24 +281,21 @@ export default function Home() {
           margin-bottom: 0.5rem;
         }
 
-        .wordmark span {
-          color: var(--amber);
-          font-style: italic;
-        }
+        .wordmark span { color: var(--amber); font-style: italic; }
 
         .tagline {
-          font-size: 0.8rem;
+          font-size: 0.78rem;
           letter-spacing: 0.25em;
           text-transform: uppercase;
           color: var(--muted);
           font-weight: 300;
         }
 
-        /* — FORM CARD — */
+        /* ── FORM CARD ── */
         .card {
           width: 100%;
           max-width: 680px;
-          background: rgba(17, 24, 39, 0.85);
+          background: rgba(17, 24, 39, 0.88);
           border: 1px solid var(--border);
           border-radius: 2px;
           backdrop-filter: blur(20px);
@@ -250,15 +318,8 @@ export default function Home() {
           gap: 1.5rem;
         }
 
-        .form-group {
-          display: flex;
-          flex-direction: column;
-          gap: 0.5rem;
-        }
-
-        .form-group.full {
-          grid-column: 1 / -1;
-        }
+        .form-group { display: flex; flex-direction: column; gap: 0.5rem; }
+        .form-group.full { grid-column: 1 / -1; }
 
         label {
           font-size: 0.7rem;
@@ -268,14 +329,11 @@ export default function Home() {
           font-weight: 400;
         }
 
-        label .required {
-          color: var(--amber-light);
-          margin-left: 2px;
-        }
+        label .req { color: var(--amber-light); margin-left: 2px; }
 
         input, select {
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(212, 145, 58, 0.18);
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(212,145,58,0.18);
           border-radius: 2px;
           color: var(--white);
           font-family: var(--font-body);
@@ -288,11 +346,10 @@ export default function Home() {
           -webkit-appearance: none;
         }
 
-        input::placeholder { color: rgba(245, 240, 232, 0.3); }
-
+        input::placeholder { color: rgba(245,240,232,0.3); }
         input:focus, select:focus {
           border-color: var(--amber);
-          background: rgba(212, 145, 58, 0.06);
+          background: rgba(212,145,58,0.06);
         }
 
         input[type="date"]::-webkit-calendar-picker-indicator {
@@ -300,31 +357,24 @@ export default function Home() {
           cursor: pointer;
         }
 
-        select option {
-          background: var(--navy-mid);
-          color: var(--white);
-        }
+        select option { background: var(--navy-mid); color: var(--white); }
 
-        /* — STYLE PILLS — */
+        .divider { height: 1px; background: var(--border); margin: 1.75rem 0; }
+
         .style-label {
           font-size: 0.7rem;
           letter-spacing: 0.2em;
           text-transform: uppercase;
           color: var(--amber);
-          font-weight: 400;
-          margin-bottom: 0.5rem;
           display: block;
+          margin-bottom: 0.5rem;
         }
 
-        .style-pills {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 0.5rem;
-        }
+        .style-pills { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 
         .pill {
           padding: 0.4rem 1rem;
-          border: 1px solid rgba(212, 145, 58, 0.25);
+          border: 1px solid rgba(212,145,58,0.25);
           border-radius: 999px;
           font-size: 0.8rem;
           font-family: var(--font-body);
@@ -334,38 +384,20 @@ export default function Home() {
           transition: all 0.2s;
           letter-spacing: 0.05em;
         }
+        .pill:hover { border-color: var(--amber); color: var(--amber-light); }
+        .pill.active { background: var(--amber-dim); border-color: var(--amber); color: var(--amber-light); }
 
-        .pill:hover {
-          border-color: var(--amber);
-          color: var(--amber-light);
-        }
-
-        .pill.active {
-          background: var(--amber-dim);
-          border-color: var(--amber);
-          color: var(--amber-light);
-        }
-
-        /* — DIVIDER — */
-        .divider {
-          height: 1px;
-          background: var(--border);
-          margin: 1.75rem 0;
-        }
-
-        /* — ERROR — */
         .error-msg {
           font-size: 0.8rem;
-          color: #e07070;
+          color: var(--red);
           letter-spacing: 0.05em;
           margin-top: 1rem;
           padding: 0.6rem 1rem;
-          border: 1px solid rgba(224, 112, 112, 0.25);
-          background: rgba(224, 112, 112, 0.06);
+          border: 1px solid rgba(248,113,113,0.25);
+          background: rgba(248,113,113,0.06);
           border-radius: 2px;
         }
 
-        /* — SUBMIT BUTTON — */
         .submit-btn {
           width: 100%;
           padding: 1rem;
@@ -395,107 +427,278 @@ export default function Home() {
           transition: transform 0.3s ease;
           z-index: 0;
         }
-
         .submit-btn:hover::before { transform: scaleX(1); }
-
-        .submit-btn:hover {
-          color: var(--navy);
-        }
-
+        .submit-btn:hover { color: var(--navy); }
         .submit-btn span { position: relative; z-index: 1; }
-
-        .submit-btn:disabled {
-          opacity: 0.4;
-          cursor: not-allowed;
-        }
-
+        .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
         .submit-btn:disabled::before { display: none; }
 
-        /* — LOADING OVERLAY — */
-        .loading-overlay {
-          position: fixed;
-          inset: 0;
-          background: rgba(10, 14, 26, 0.97);
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          z-index: 100;
-          gap: 2.5rem;
-        }
-
-        .loading-globe {
-          width: 72px;
-          height: 72px;
-          border: 1px solid rgba(212, 145, 58, 0.2);
-          border-top-color: var(--amber);
-          border-radius: 50%;
-          animation: spin 1.4s linear infinite;
-        }
-
-        .loading-inner {
-          width: 48px;
-          height: 48px;
-          border: 1px solid rgba(212, 145, 58, 0.1);
-          border-bottom-color: var(--amber-light);
-          border-radius: 50%;
-          position: absolute;
-          animation: spin-reverse 1s linear infinite;
-        }
-
-        .loading-spinner-wrap {
+        /* ── LOADING PANEL ── */
+        .loading-panel {
+          width: 100%;
+          max-width: 680px;
           position: relative;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          z-index: 1;
         }
 
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes spin-reverse { to { transform: rotate(-360deg); } }
+        .loading-panel-header {
+          margin-bottom: 2.5rem;
+          text-align: center;
+        }
 
         .loading-title {
           font-family: var(--font-display);
-          font-size: 1.8rem;
+          font-size: clamp(1.6rem, 4vw, 2.4rem);
           font-weight: 300;
-          letter-spacing: 0.1em;
+          letter-spacing: 0.08em;
           color: var(--white);
+          margin-bottom: 0.5rem;
         }
 
-        .loading-step {
-          font-size: 0.78rem;
+        .loading-subtitle {
+          font-size: 0.72rem;
           letter-spacing: 0.2em;
           text-transform: uppercase;
-          color: var(--amber);
-          animation: fadeStep 0.5s ease;
+          color: var(--muted);
         }
 
-        @keyframes fadeStep {
-          from { opacity: 0; transform: translateY(6px); }
-          to { opacity: 1; transform: translateY(0); }
+        /* Progress bar */
+        .progress-track {
+          height: 2px;
+          background: rgba(212,145,58,0.12);
+          border-radius: 1px;
+          margin-bottom: 2.5rem;
+          overflow: hidden;
         }
 
-        .loading-progress {
+        .progress-fill {
+          height: 100%;
+          background: linear-gradient(90deg, var(--amber), var(--amber-light));
+          border-radius: 1px;
+          transition: width 0.6s ease;
+        }
+
+        /* Agent grid */
+        .agent-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 0.75rem;
+          margin-bottom: 1rem;
+        }
+
+        .agent-card {
+          background: rgba(17,24,39,0.85);
+          border: 1px solid var(--border);
+          border-radius: 2px;
+          padding: 0.9rem 1.1rem;
           display: flex;
-          gap: 8px;
+          align-items: center;
+          gap: 0.85rem;
+          transition: border-color 0.3s, background 0.3s;
+          position: relative;
+          overflow: hidden;
         }
 
-        .progress-dot {
+        .agent-card.running {
+          border-color: rgba(212,145,58,0.5);
+          background: rgba(212,145,58,0.05);
+        }
+
+        .agent-card.done {
+          border-color: rgba(74,222,128,0.3);
+          background: rgba(74,222,128,0.04);
+        }
+
+        .agent-card.error {
+          border-color: rgba(248,113,113,0.3);
+          background: rgba(248,113,113,0.04);
+        }
+
+        /* Shimmer on running cards */
+        .agent-card.running::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(90deg, transparent, rgba(212,145,58,0.06), transparent);
+          animation: shimmer 1.8s infinite;
+        }
+
+        @keyframes shimmer {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(100%); }
+        }
+
+        .agent-icon {
+          font-size: 1rem;
+          width: 28px;
+          height: 28px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border: 1px solid var(--border);
+          border-radius: 2px;
+          color: var(--amber);
+          flex-shrink: 0;
+          font-family: var(--font-mono);
+          position: relative;
+          z-index: 1;
+        }
+
+        .agent-card.done .agent-icon { color: var(--green); border-color: rgba(74,222,128,0.3); }
+        .agent-card.error .agent-icon { color: var(--red); border-color: rgba(248,113,113,0.3); }
+
+        .agent-info { flex: 1; min-width: 0; position: relative; z-index: 1; }
+
+        .agent-name {
+          font-size: 0.75rem;
+          font-weight: 500;
+          color: var(--white);
+          letter-spacing: 0.04em;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .agent-status-text {
+          font-size: 0.65rem;
+          font-family: var(--font-mono);
+          letter-spacing: 0.08em;
+          margin-top: 2px;
+        }
+
+        .agent-card.running .agent-status-text { color: var(--amber); }
+        .agent-card.done .agent-status-text { color: var(--green); }
+        .agent-card.error .agent-status-text { color: var(--red); }
+        .agent-card.pending .agent-status-text { color: var(--muted); }
+
+        /* Spinning dot for running */
+        .spin-dot {
           width: 6px;
           height: 6px;
           border-radius: 50%;
-          background: rgba(212, 145, 58, 0.25);
-          transition: background 0.3s;
-        }
-
-        .progress-dot.active {
           background: var(--amber);
+          animation: pulse 1s ease-in-out infinite;
+          flex-shrink: 0;
+          position: relative;
+          z-index: 1;
         }
 
-        /* — FOOTER — */
+        .done-check {
+          color: var(--green);
+          font-size: 0.85rem;
+          font-weight: 600;
+          flex-shrink: 0;
+          position: relative;
+          z-index: 1;
+        }
+
+        @keyframes pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.5; transform: scale(0.7); }
+        }
+
+        /* ── SYNTHESIS PANEL ── */
+        .synthesis-panel {
+          width: 100%;
+          max-width: 680px;
+          position: relative;
+          z-index: 1;
+        }
+
+        .synthesis-header {
+          text-align: center;
+          margin-bottom: 1.5rem;
+        }
+
+        .synthesis-title {
+          font-family: var(--font-display);
+          font-size: clamp(1.4rem, 4vw, 2rem);
+          font-weight: 300;
+          color: var(--white);
+          letter-spacing: 0.08em;
+          margin-bottom: 0.35rem;
+        }
+
+        .synthesis-sub {
+          font-size: 0.7rem;
+          letter-spacing: 0.2em;
+          text-transform: uppercase;
+          color: var(--amber);
+        }
+
+        .stream-box {
+          background: rgba(17,24,39,0.92);
+          border: 1px solid var(--border);
+          border-radius: 2px;
+          padding: 1.5rem;
+          position: relative;
+          overflow: hidden;
+        }
+
+        .stream-box::before {
+          content: '';
+          position: absolute;
+          top: 0; left: 0; right: 0;
+          height: 2px;
+          background: linear-gradient(90deg, transparent, var(--amber), transparent);
+        }
+
+        .stream-text {
+          font-family: var(--font-mono);
+          font-size: 0.72rem;
+          line-height: 1.7;
+          color: rgba(245,240,232,0.7);
+          white-space: pre-wrap;
+          word-break: break-all;
+          max-height: 380px;
+          overflow-y: auto;
+        }
+
+        .cursor-blink {
+          display: inline-block;
+          width: 2px;
+          height: 0.9em;
+          background: var(--amber);
+          vertical-align: text-bottom;
+          margin-left: 1px;
+          animation: blink 1s step-end infinite;
+        }
+
+        @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+        .stream-note {
+          text-align: center;
+          font-size: 0.7rem;
+          color: var(--muted);
+          letter-spacing: 0.1em;
+          margin-top: 1rem;
+        }
+
+        /* Compact agent recap during synthesis */
+        .agent-recap {
+          display: flex;
+          gap: 0.5rem;
+          flex-wrap: wrap;
+          justify-content: center;
+          margin-bottom: 1.5rem;
+        }
+
+        .recap-chip {
+          font-size: 0.65rem;
+          font-family: var(--font-mono);
+          letter-spacing: 0.08em;
+          padding: 0.25rem 0.6rem;
+          border: 1px solid rgba(74,222,128,0.25);
+          border-radius: 999px;
+          color: var(--green);
+          background: var(--green-dim);
+        }
+
+        /* ── FOOTER ── */
         .footer {
           margin-top: 2rem;
           font-size: 0.72rem;
-          color: rgba(245, 240, 232, 0.2);
+          color: rgba(245,240,232,0.2);
           letter-spacing: 0.1em;
           text-align: center;
           position: relative;
@@ -503,176 +706,161 @@ export default function Home() {
         }
 
         @media (max-width: 600px) {
-          .card { padding: 2rem 1.5rem; }
+          .card { padding: 2rem 1.25rem; }
           .form-grid { grid-template-columns: 1fr; }
           .form-group.full { grid-column: 1; }
+          .agent-grid { grid-template-columns: 1fr; }
         }
       `}</style>
 
-      {/* Loading overlay */}
-      {loading && (
-        <div className="loading-overlay">
-          <div className="loading-spinner-wrap">
-            <div className="loading-globe" />
-            <div className="loading-inner" />
-          </div>
-          <div style={{ textAlign: "center" }}>
-            <div className="loading-title">Planning your journey</div>
-          </div>
-          <div
-            key={loadingStep}
-            className="loading-step"
-          >
-            {LOADING_STEPS[loadingStep]}
-          </div>
-          <div className="loading-progress">
-            {LOADING_STEPS.map((_, i) => (
-              <div
-                key={i}
-                className={`progress-dot ${i <= loadingStep ? "active" : ""}`}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
       <div className="page">
-        {/* Header */}
-        <header className="header">
-          <h1 className="wordmark">
-            Travel<span>Buddy</span>
-          </h1>
-          <p className="tagline">AI-powered itineraries · Real flights · Live data</p>
-        </header>
 
-        {/* Form card */}
-        <div className="card">
-          <form onSubmit={handleSubmit}>
-            <div className="form-grid">
+        {/* ── FORM PHASE ── */}
+        {phase === "form" && (
+          <>
+            <header className="header">
+              <h1 className="wordmark">Travel<span>Buddy</span></h1>
+              <p className="tagline">AI-powered itineraries · Real flights · Live data</p>
+            </header>
 
-              {/* Origin */}
-              <div className="form-group">
-                <label>
-                  From <span className="required">*</span>
-                </label>
-                <input
-                  type="text"
-                  name="origin"
-                  placeholder="Delhi"
-                  value={form.origin}
-                  onChange={handleChange}
-                  autoComplete="off"
-                />
-              </div>
+            <div className="card">
+              <form onSubmit={handleSubmit}>
+                <div className="form-grid">
+                  <div className="form-group">
+                    <label>From <span className="req">*</span></label>
+                    <input type="text" name="origin" placeholder="Delhi" value={form.origin} onChange={handleChange} autoComplete="off" />
+                  </div>
+                  <div className="form-group">
+                    <label>To <span className="req">*</span></label>
+                    <input type="text" name="destination" placeholder="Goa" value={form.destination} onChange={handleChange} autoComplete="off" />
+                  </div>
+                  <div className="form-group">
+                    <label>Departure <span className="req">*</span></label>
+                    <input type="date" name="startDate" min={today} value={form.startDate} onChange={handleChange} />
+                  </div>
+                  <div className="form-group">
+                    <label>Return <span className="req">*</span></label>
+                    <input type="date" name="endDate" min={form.startDate || today} value={form.endDate} onChange={handleChange} />
+                  </div>
+                  <div className="form-group">
+                    <label>Travellers</label>
+                    <select name="people" value={form.people} onChange={handleChange}>
+                      {[1,2,3,4,5,6,7,8].map(n => (
+                        <option key={n} value={n}>{n} {n === 1 ? "person" : "people"}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label>Budget</label>
+                    <input type="text" name="budget" placeholder="e.g. ₹50,000 per person" value={form.budget} onChange={handleChange} />
+                  </div>
+                </div>
 
-              {/* Destination */}
-              <div className="form-group">
-                <label>
-                  To <span className="required">*</span>
-                </label>
-                <input
-                  type="text"
-                  name="destination"
-                  placeholder="Mumbai"
-                  value={form.destination}
-                  onChange={handleChange}
-                  autoComplete="off"
-                />
-              </div>
+                <div className="divider" />
 
-              {/* Start date */}
-              <div className="form-group">
-                <label>
-                  Departure <span className="required">*</span>
-                </label>
-                <input
-                  type="date"
-                  name="startDate"
-                  min={today}
-                  value={form.startDate}
-                  onChange={handleChange}
-                />
-              </div>
+                <div>
+                  <span className="style-label">Trip style</span>
+                  <div className="style-pills">
+                    {TRIP_STYLES.map(s => (
+                      <button key={s} type="button"
+                        className={`pill ${form.tripStyle === s ? "active" : ""}`}
+                        onClick={() => setForm(p => ({ ...p, tripStyle: s }))}>
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-              {/* End date */}
-              <div className="form-group">
-                <label>
-                  Return <span className="required">*</span>
-                </label>
-                <input
-                  type="date"
-                  name="endDate"
-                  min={form.startDate || today}
-                  value={form.endDate}
-                  onChange={handleChange}
-                />
-              </div>
+                {formError && <div className="error-msg">{formError}</div>}
+                {error && <div className="error-msg">{error}</div>}
 
-              {/* People */}
-              <div className="form-group">
-                <label>Travellers</label>
-                <select
-                  name="people"
-                  value={form.people}
-                  onChange={handleChange}
-                >
-                  {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
-                    <option key={n} value={n}>
-                      {n} {n === 1 ? "person" : "people"}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Budget */}
-              <div className="form-group">
-                <label>Budget</label>
-                <input
-                  type="text"
-                  name="budget"
-                  placeholder="e.g. ₹50,000 per person"
-                  value={form.budget}
-                  onChange={handleChange}
-                />
-              </div>
-
+                <button type="submit" className="submit-btn">
+                  <span>Plan My Journey</span>
+                </button>
+              </form>
             </div>
 
-            {/* Trip style pills */}
-            <div className="divider" />
-            <div>
-              <span className="style-label">Trip style</span>
-              <div className="style-pills">
-                {TRIP_STYLES.map((style) => (
-                  <button
-                    key={style}
-                    type="button"
-                    className={`pill ${form.tripStyle === style ? "active" : ""}`}
-                    onClick={() => handleStyleSelect(style)}
-                  >
-                    {style}
-                  </button>
-                ))}
+            <footer className="footer">
+              Powered by Claude · Real-time flight & hotel data · Geoapify routing
+            </footer>
+          </>
+        )}
+
+        {/* ── LOADING PHASE: agents firing ── */}
+        {phase === "loading" && (
+          <div className="loading-panel">
+            <div className="loading-panel-header">
+              <div className="loading-title">Dispatching agents</div>
+              <div className="loading-subtitle">
+                {doneCount < totalAgents
+                  ? `${doneCount} of ${totalAgents} complete`
+                  : "All data gathered — synthesising..."}
               </div>
             </div>
 
-            {/* Error */}
-            {error && <div className="error-msg">{error}</div>}
+            <div className="progress-track">
+              <div
+                className="progress-fill"
+                style={{ width: `${(doneCount / totalAgents) * 100}%` }}
+              />
+            </div>
 
-            {/* Submit */}
-            <button
-              type="submit"
-              className="submit-btn"
-              disabled={loading}
-            >
-              <span>Plan My Journey</span>
-            </button>
-          </form>
-        </div>
+            <div className="agent-grid">
+              {Object.entries(AGENT_META).map(([id, meta]) => {
+                const agent = agents.find(a => a.id === id);
+                const status = agent?.status ?? "pending";
+                return (
+                  <div key={id} className={`agent-card ${status}`}>
+                    <div className="agent-icon">{meta.icon}</div>
+                    <div className="agent-info">
+                      <div className="agent-name">{meta.label}</div>
+                      <div className="agent-status-text">
+                        {status === "pending" && "waiting..."}
+                        {status === "running" && "fetching data"}
+                        {status === "done" && "complete"}
+                        {status === "error" && "failed"}
+                      </div>
+                    </div>
+                    {status === "running" && <div className="spin-dot" />}
+                    {status === "done" && <div className="done-check">✓</div>}
+                    {status === "error" && <div style={{ color: "var(--red)", fontSize: "0.85rem", flexShrink: 0, position: "relative", zIndex: 1 }}>✗</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
-        <footer className="footer">
-          Powered by Claude · Real-time flight & hotel data · Geoapify routing
-        </footer>
+        {/* ── STREAMING PHASE: synthesis ── */}
+        {phase === "streaming" && (
+          <div className="synthesis-panel">
+            <div className="synthesis-header">
+              <div className="synthesis-title">Writing your itinerary</div>
+              <div className="synthesis-sub">Claude is composing from real-time data</div>
+            </div>
+
+            {/* Compact agent recap */}
+            <div className="agent-recap">
+              {agents.filter(a => a.status === "done").map(a => (
+                <div key={a.id} className="recap-chip">
+                  ✓ {AGENT_META[a.id]?.label || a.label}
+                </div>
+              ))}
+            </div>
+
+            <div className="stream-box">
+              <pre className="stream-text" ref={streamBoxRef}>
+                {synthesisText}
+                <span className="cursor-blink" />
+              </pre>
+            </div>
+
+            <div className="stream-note">
+              Redirecting to your itinerary when ready...
+            </div>
+          </div>
+        )}
+
       </div>
     </>
   );
