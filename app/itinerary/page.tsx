@@ -35,7 +35,8 @@ interface Flight {
 interface Hotel {
   name: string;
   rating: number;
-  price: number;
+  totalPrice: number;
+  currency: string;
   location: string;
   distanceFromCenter: string;
 }
@@ -177,7 +178,11 @@ function HotelCard({ hotel, recommended }: { hotel: Hotel; recommended?: boolean
         <span>{hotel.distanceFromCenter} from centre</span>
       </div>
       <div className="hotel-location">{hotel.location}</div>
-      {hotel.price > 0 && <div className="hotel-price">₹{hotel.price.toLocaleString("en-IN")} / night</div>}
+      {hotel.totalPrice > 0 && (
+  <div className="hotel-price">
+    {hotel.currency || "₹"}{hotel.totalPrice.toLocaleString()} total stay
+  </div>
+)}
     </div>
   );
 }

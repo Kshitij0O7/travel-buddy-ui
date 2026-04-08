@@ -1,9 +1,19 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest } from "next/server";
+import fs from "fs";
+import path from "path";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
 });
+
+function loadSkill(skillName: string): string {
+  const skillPath = path.join(process.cwd(), "skills", skillName, "SKILL.md");
+  return fs.readFileSync(skillPath, "utf-8");
+}
+
+const RESOLVER_SKILL = loadSkill("travel-resolver");
+const SYNTHESIS_SKILL = loadSkill("travel-synthesis");
 
 export const maxDuration = 300;
 
@@ -183,31 +193,25 @@ async function resolveTrip(
   destination: string,
   days: number
 ): Promise<TripResolution> {
-  const prompt = `You are a travel geography expert. Given a trip, return a JSON object with these exact fields:
-
-{
-  "originIATA": "IATA code of the nearest major airport for '${origin}'",
-  "gatewayIATA": "IATA code of the airport travelers FLY INTO when visiting '${destination}' — see rules below",
-  "primaryCity": "The main city to search hotels and weather for",
-  "keyCities": ["Array of cities to visit, in logical travel order, appropriate for ${days} days. If destination is a city, return just that city. If it is a country or region, return the 2-4 most important cities travelers should visit in ${days} days."],
-  "destinationLabel": "The destination exactly as provided: '${destination}'",
-  "currency": "ISO 4217 currency code used at the destination e.g. JPY, EUR, USD, INR",
-  "currencySymbol": "Currency symbol e.g. ¥, €, $, ₹",
-  "isMultiCity": true or false (true if keyCities has more than one entry)
-}
-
-Rules for gatewayIATA — read carefully:
-- gatewayIATA is the airport WITHIN or closest to the destination itself, not a hub in a neighboring region.
-- For Indian states/regions, always use the airport located IN that state. Examples: Mizoram → AJL, Meghalaya → SHL, Manipur → IMF, Nagaland → DMU, Arunachal Pradesh → ITI, Tripura → IXA, Assam → GAU, Kerala → COK, Goa → GOI, Himachal Pradesh → DHM, Uttarakhand → DED, Sikkim → baghdogra (IXB is nearest).
-- Never substitute a hub in a neighboring state (do NOT use IXA for Mizoram, do NOT use GAU for Manipur).
-- For countries: use the primary international hub (Japan → NRT, France → CDG, Thailand → BKK).
-- For cities: use that city's own airport directly or the nearest airport.
-- Return ONLY the raw JSON object. No markdown, no explanation.`;
-
+  
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-5",
     max_tokens: 512,
-    messages: [{ role: "user", content: prompt }],
+    system: [
+      {
+        type: "text",
+        text: RESOLVER_SKILL,
+        cache_control: { type: "ephemeral" },
+      }
+    ],
+    messages: [{
+      role: "user",
+      content: `Origin: ${origin}
+Destination: ${destination}
+Duration: ${days} days
+
+Return the TripResolution JSON object.`
+    }],
   });
 
   const text = response.content
@@ -403,57 +407,6 @@ async function gatherDataInParallel(
   };
 }
 
-// ─── Synthesis prompt ─────────────────────────────────────────────────────────
-
-const SYNTHESIS_SYSTEM = `You are TravelBuddy, an expert AI travel planner. You receive pre-gathered real-time data from specialist agents. Synthesise this into a complete itinerary.
-
-RULES:
-1. Use ONLY real data provided — never invent flight numbers, prices, or hotel names.
-2. Anchor every day to real flight arrival/departure times.
-3. Never suggest activities impossible given driving times from maps data.
-4. If a tool returned an error for flights, acknowledge it and omit the flights section — do not fabricate alternatives.
-5. MULTI-CITY: If keyCities has more than one entry, distribute days across ALL cities proportionally. Do not concentrate the entire itinerary in one city.
-6. HOTEL PRICES: The hotel price field from the API is in the LOCAL currency of the destination (indicated by currency/currencySymbol in the resolution data). Output prices with the correct currency symbol. Never display local currency prices with ₹ unless the destination is India.
-7. In estimatedBudget, always clarify the currency being used.
-
-OUTPUT: Return ONLY a valid raw JSON object. No markdown fences, no preamble. Start with { and end with }.
-
-{
-  "destination": "string",
-  "origin": "string",
-  "duration": "string e.g. 5 days",
-  "summary": "2-3 sentence overview",
-  "weather": { "summary": "string", "temperature": "string", "advice": "string" },
-  "flights": {
-    "outbound": [{ "flightNumber": "", "airline": "", "departure": "", "arrival": "", "duration": "", "price": 0, "currency": "" }],
-    "return": [{ "flightNumber": "", "airline": "", "departure": "", "arrival": "", "duration": "", "price": 0, "currency": "" }],
-    "recommendation": "string"
-  },
-  "hotels": [{ "name": "", "rating": 0, "pricePerNight": 0, "currency": "", "location": "", "distanceFromCenter": "" }],
-  "hotelRecommendation": "string",
-  "days": [
-    {
-      "day": 1,
-      "date": "YYYY-MM-DD",
-      "city": "string — which city this day is in",
-      "title": "string",
-      "morning": [{ "time": "HH:MM", "activity": "", "details": "", "tip": "" }],
-      "afternoon": [{ "time": "HH:MM", "activity": "", "details": "", "tip": "" }],
-      "evening": [{ "time": "HH:MM", "activity": "", "details": "", "tip": "" }],
-      "accommodation": "",
-      "travelNote": ""
-    }
-  ],
-  "practicalTips": ["string"],
-  "estimatedBudget": {
-    "flights": "string — include currency",
-    "hotels": "string — include currency and note it is per night",
-    "food": "string — include currency",
-    "activities": "string — include currency",
-    "total": "string — include currency"
-  }
-}`;
-
 // ─── Streaming synthesis ──────────────────────────────────────────────────────
 
 async function streamSynthesis(
@@ -513,7 +466,13 @@ Now write the complete itinerary JSON. Remember: hotel prices are in ${resolutio
   const stream = anthropic.messages.stream({
     model: "claude-sonnet-4-5",
     max_tokens: 16000,
-    system: SYNTHESIS_SYSTEM,
+    system: [
+      {
+        type: "text",
+        text: SYNTHESIS_SKILL,
+        cache_control: { type: "ephemeral" },
+      }
+    ],
     messages: [{ role: "user", content: userMessage }],
   });
 
