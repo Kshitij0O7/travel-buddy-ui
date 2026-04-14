@@ -728,11 +728,11 @@ export default function Home() {
                 <div className="form-grid">
                   <div className="form-group">
                     <label>From <span className="req">*</span></label>
-                    <input type="text" name="origin" placeholder="Delhi" value={form.origin} onChange={handleChange} autoComplete="off" />
+                    <input type="text" name="origin" placeholder="Departure" value={form.origin} onChange={handleChange} autoComplete="off" />
                   </div>
                   <div className="form-group">
                     <label>To <span className="req">*</span></label>
-                    <input type="text" name="destination" placeholder="Goa" value={form.destination} onChange={handleChange} autoComplete="off" />
+                    <input type="text" name="destination" placeholder="Destination" value={form.destination} onChange={handleChange} autoComplete="off" />
                   </div>
                   <div className="form-group">
                     <label>Departure <span className="req">*</span></label>

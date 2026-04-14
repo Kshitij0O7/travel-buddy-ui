@@ -1,309 +1,19 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest } from "next/server";
-import fs from "fs";
-import path from "path";
+import { resolveTrip } from "../../../helpers/resolver";
+import { flightTool } from "../../../tools/flight";
+import { hotelTool } from "../../../tools/hotel";
+import { weatherTool } from "../../../tools/weather";
+import { mapsTool } from "../../../tools/maps";
+import { contentTool } from "../../../tools/content";
+import {loadSkill} from "../../../helpers/skills";
+import { SSEEvent } from "../../../interfaces/sse";
+import { GatheredData } from "../../../interfaces/data";
+import { runSubAgent } from "../../../helpers/runAgent";
+import { anthropic } from "../index";
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-});
-
-function loadSkill(skillName: string): string {
-  const skillPath = path.join(process.cwd(), "skills", skillName, "SKILL.md");
-  return fs.readFileSync(skillPath, "utf-8");
-}
-
-const RESOLVER_SKILL = loadSkill("travel-resolver");
 const SYNTHESIS_SKILL = loadSkill("travel-synthesis");
 
 export const maxDuration = 300;
-
-const API_BASE = process.env.TRAVEL_API_URL;
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface SSEEvent {
-  type:
-    | "agent_start"
-    | "agent_done"
-    | "agent_error"
-    | "synthesis_start"
-    | "synthesis_chunk"
-    | "done"
-    | "error";
-  agent?: string;
-  label?: string;
-  data?: unknown;
-  chunk?: string;
-  itinerary?: unknown;
-  message?: string;
-}
-
-interface TripResolution {
-  originIATA: string;           // e.g. "DEL"
-  gatewayIATA: string;          // e.g. "NRT" (main arrival airport at destination)
-  primaryCity: string;          // e.g. "Tokyo" (for hotels/weather/content)
-  keyCities: string[];          // e.g. ["Tokyo","Kyoto","Osaka"] for multi-city synthesis
-  destinationLabel: string;     // e.g. "Japan" (as user typed, for display)
-  currency: string;             // e.g. "JPY" — local currency of destination
-  currencySymbol: string;       // e.g. "¥"
-  isMultiCity: boolean;
-}
-
-// ─── Tool definitions ──────────────────────────────────────────────────────────
-
-const flightTool: Anthropic.Tool = {
-  name: "search_flights",
-  description: "Search for available flights between two airports on a given date.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      origin: { type: "string", description: "Departure airport IATA code e.g. DEL" },
-      destination: { type: "string", description: "Arrival airport IATA code e.g. NRT" },
-      date: { type: "string", description: "Flight date in YYYY-MM-DD format" },
-      adults: { type: "number", description: "Number of adult passengers" },
-    },
-    required: ["origin", "destination", "date"],
-  },
-};
-
-const hotelTool: Anthropic.Tool = {
-  name: "search_hotels",
-  description: "Search for available hotels at a destination for given dates.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      location: { type: "string", description: "City or region name" },
-      checkin: { type: "string", description: "Check-in date YYYY-MM-DD" },
-      checkout: { type: "string", description: "Check-out date YYYY-MM-DD" },
-      adults: { type: "number", description: "Number of guests" },
-      budget: { type: "number", description: "Max price per night in INR (optional)" },
-    },
-    required: ["location", "checkin", "checkout"],
-  },
-};
-
-const weatherTool: Anthropic.Tool = {
-  name: "get_weather",
-  description: "Get weather forecast for a location and date range.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      location: { type: "string" },
-      startDate: { type: "string", description: "YYYY-MM-DD" },
-      endDate: { type: "string", description: "YYYY-MM-DD" },
-    },
-    required: ["location", "startDate", "endDate"],
-  },
-};
-
-const mapsTool: Anthropic.Tool = {
-  name: "get_maps_context",
-  description: "Get driving times and distances between stops to validate itinerary feasibility.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      locations: {
-        type: "string",
-        description: "Comma-separated locations in visit order e.g. Tokyo,Kyoto,Osaka",
-      },
-    },
-    required: ["locations"],
-  },
-};
-
-const contentTool: Anthropic.Tool = {
-  name: "get_content",
-  description: "Get YouTube content metadata — popular and underrated places by real engagement.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      location: { type: "string", description: "Destination name" },
-    },
-    required: ["location"],
-  },
-};
-
-// ─── Tool executor ────────────────────────────────────────────────────────────
-
-async function executeTool(
-  toolName: string,
-  toolInput: Record<string, unknown>
-): Promise<string> {
-  try {
-    const params = new URLSearchParams();
-    let url: string;
-
-    switch (toolName) {
-      case "search_flights":
-        params.set("origin", String(toolInput.origin));
-        params.set("destination", String(toolInput.destination));
-        params.set("date", String(toolInput.date));
-        if (toolInput.adults) params.set("adults", String(toolInput.adults));
-        url = `${API_BASE}/api/v1/flights?${params}`;
-        break;
-      case "search_hotels":
-        params.set("location", String(toolInput.location));
-        params.set("checkin", String(toolInput.checkin));
-        params.set("checkout", String(toolInput.checkout));
-        if (toolInput.adults) params.set("adults", String(toolInput.adults));
-        if (toolInput.budget) params.set("budget", String(toolInput.budget));
-        url = `${API_BASE}/api/v1/hotels?${params}`;
-        break;
-      case "get_weather":
-        params.set("location", String(toolInput.location));
-        params.set("startDate", String(toolInput.startDate));
-        params.set("endDate", String(toolInput.endDate));
-        url = `${API_BASE}/api/v1/weather/mcp?${params}`;
-        break;
-      case "get_maps_context":
-        params.set("locations", String(toolInput.locations));
-        url = `${API_BASE}/api/v1/maps/mcp/context?${params}`;
-        break;
-      case "get_content":
-        params.set("location", String(toolInput.location));
-        url = `${API_BASE}/api/v1/content/mcp?${params}`;
-        break;
-      default:
-        return JSON.stringify({ error: `Unknown tool: ${toolName}` });
-    }
-
-    const res = await fetch(url);
-    if (!res.ok)
-      return JSON.stringify({ error: `API ${res.status}`, tool: toolName });
-    return JSON.stringify(await res.json());
-  } catch (err) {
-    return JSON.stringify({
-      error: "Tool failed",
-      tool: toolName,
-      message: err instanceof Error ? err.message : "Unknown",
-    });
-  }
-}
-
-// ─── Trip resolver ────────────────────────────────────────────────────────────
-// Runs BEFORE any data agents. Uses Claude's knowledge to:
-//   1. Convert free-text origin/destination to IATA codes
-//   2. Detect if destination is a country/region → expand to key cities
-//   3. Identify local currency
-// This replaces the brittle hardcoded IATA map and handles any destination
-// worldwide including countries, regions, and multi-word city names.
-
-async function resolveTrip(
-  origin: string,
-  destination: string,
-  days: number
-): Promise<TripResolution> {
-  
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-5",
-    max_tokens: 512,
-    system: [
-      {
-        type: "text",
-        text: RESOLVER_SKILL,
-        cache_control: { type: "ephemeral" },
-      }
-    ],
-    messages: [{
-      role: "user",
-      content: `Origin: ${origin}
-Destination: ${destination}
-Duration: ${days} days
-
-Return the TripResolution JSON object.`
-    }],
-  });
-
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("");
-
-  const clean = text.replace(/```json\n?/gi, "").replace(/```/g, "").trim();
-  const start = clean.indexOf("{");
-  const end = clean.lastIndexOf("}");
-  const parsed = JSON.parse(clean.slice(start, end + 1)) as TripResolution;
-  return parsed;
-}
-
-// ─── Generic single-tool sub-agent ───────────────────────────────────────────
-
-async function runSubAgent(
-  systemPrompt: string,
-  userMessage: string,
-  tool: Anthropic.Tool
-): Promise<unknown> {
-  const messages: Anthropic.MessageParam[] = [
-    { role: "user", content: userMessage },
-  ];
-
-  for (let i = 0; i < 5; i++) {
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-5",
-      max_tokens: 4096,
-      system: systemPrompt,
-      tools: [tool],
-      messages,
-    });
-
-    if (response.stop_reason === "tool_use") {
-      messages.push({ role: "assistant", content: response.content });
-
-      const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
-        response.content
-          .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use")
-          .map(async (b) => ({
-            type: "tool_result" as const,
-            tool_use_id: b.id,
-            content: await executeTool(b.name, b.input as Record<string, unknown>),
-          }))
-      );
-
-      messages.push({ role: "user", content: toolResults });
-      continue;
-    }
-
-    if (response.stop_reason === "end_turn") {
-      for (let m = messages.length - 1; m >= 0; m--) {
-        const msg = messages[m];
-        if (msg.role === "user" && Array.isArray(msg.content)) {
-          const tr = msg.content.find(
-            (c): c is Anthropic.ToolResultBlockParam =>
-              (c as Anthropic.ToolResultBlockParam).type === "tool_result"
-          );
-          if (tr) {
-            const raw =
-              typeof tr.content === "string"
-                ? tr.content
-                : Array.isArray(tr.content)
-                  ? ((tr.content[0] as { text?: string })?.text ?? JSON.stringify(tr.content[0]))
-                  : String(tr.content);
-            try {
-              return JSON.parse(raw);
-            } catch {
-              return raw;
-            }
-          }
-        }
-      }
-      return null;
-    }
-    break;
-  }
-  return null;
-}
-
-// ─── Parallel data gathering phase ───────────────────────────────────────────
-
-interface GatheredData {
-  outboundFlights: unknown;
-  returnFlights: unknown;
-  hotels: unknown;
-  weather: unknown;
-  content: unknown;
-  maps: unknown;
-  resolution: TripResolution;
-}
 
 async function gatherDataInParallel(
   tripInfo: {
@@ -324,7 +34,7 @@ async function gatherDataInParallel(
 
   // ── Step 0: Resolve geography first — IATA codes, key cities, currency ──────
   emit({ type: "agent_start", agent: "resolver", label: "Resolving destinations" });
-  const resolution = await resolveTrip(origin, destination, days);
+  const resolution = await resolveTrip(origin, destination, days, anthropic);
   emit({ type: "agent_done", agent: "resolver", label: "Destinations resolved", data: resolution });
 
   const { originIATA, gatewayIATA, primaryCity, keyCities } = resolution;
@@ -341,28 +51,33 @@ async function gatherDataInParallel(
       runSubAgent(
         `You are a flight search agent. Call search_flights ONCE using EXACTLY these IATA codes: origin=${originIATA}, destination=${gatewayIATA}. Do not translate, modify, or guess — use them verbatim.`,
         `Search flights: origin=${originIATA}, destination=${gatewayIATA}, date=${startDate}, adults=${people}`,
-        flightTool
+        flightTool,
+        anthropic
       ),
       runSubAgent(
         `You are a flight search agent. Call search_flights ONCE using EXACTLY these IATA codes: origin=${gatewayIATA}, destination=${originIATA}. Do not translate, modify, or guess — use them verbatim.`,
         `Search flights: origin=${gatewayIATA}, destination=${originIATA}, date=${endDate}, adults=${people}`,
-        flightTool
+        flightTool,
+        anthropic
       ),
       runSubAgent(
         "You are a weather agent. Call get_weather once for the given location and dates.",
         `Get weather for ${primaryCity} from ${startDate} to ${endDate}`,
-        weatherTool
+        weatherTool,
+        anthropic
       ),
       runSubAgent(
         "You are a content discovery agent. Call get_content once for the given destination.",
         `Get local content and highlights for ${destination}`,
-        contentTool
+        contentTool,
+        anthropic
       ),
       runSubAgent(
         `You are a hotel search agent. Call search_hotels once for the PRIMARY base city only. ${budget ? `Budget constraint: ${budget}.` : ""}. Hotel prices returned by search_hotels are TOTAL stay prices, not per night. 
         Always divide by number of nights to get per night rate before displaying. Show both: per night rate and total stay cost.`,
         `Search hotels in ${primaryCity}, checkin=${startDate}, checkout=${endDate}, adults=${people}${budget ? `, budget=${budget}` : ""}`,
-        hotelTool
+        hotelTool,
+        anthropic
       ),
     ]);
 
@@ -391,7 +106,8 @@ async function gatherDataInParallel(
   const mapsResult = await runSubAgent(
     "You are a maps agent. Call get_maps_context once with all the locations provided as a comma-separated string.",
     `Get maps context for locations: ${mapsLocations}`,
-    mapsTool
+    mapsTool,
+    anthropic
   );
 
   emit({ type: "agent_done", agent: "maps", label: "Routes validated", data: mapsResult });
@@ -406,8 +122,6 @@ async function gatherDataInParallel(
     resolution,
   };
 }
-
-// ─── Streaming synthesis ──────────────────────────────────────────────────────
 
 async function streamSynthesis(
   gatheredData: GatheredData,
@@ -459,7 +173,7 @@ ${JSON.stringify(gatheredData.content, null, 2)}
 MAPS / TRAVEL TIMES between cities:
 ${JSON.stringify(gatheredData.maps, null, 2)}
 
-Now write the complete itinerary JSON. Remember: hotel prices are in ${resolution.currency}, use ${resolution.currencySymbol} not ₹ for all destination prices.`;
+Now write the complete itinerary JSON. Remember: hotel prices are in ${resolution.currency}, use ${resolution.currencySymbol} for all destination prices.`;
 
   emit({ type: "synthesis_start" });
 
@@ -487,8 +201,6 @@ Now write the complete itinerary JSON. Remember: hotel prices are in ${resolutio
 
   return fullText;
 }
-
-// ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   const body = await req.json();

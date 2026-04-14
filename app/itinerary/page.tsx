@@ -227,13 +227,13 @@ export default function ItineraryPage() {
 
     try {
       const history = chatMessages
-        .filter(m => m.role !== "assistant" || chatMessages.indexOf(m) > 0)
+        .filter(m => m.role !== "assistant" || chatMessages.indexOf(m) >= 0)
         .map(m => ({ role: m.role, content: m.content }));
 
       const res = await fetch("/api/chat", {
-        method: "POST",
+        method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, itinerary, chatHistory: history }),
+        body: JSON.stringify({ message, itinerary, history }),
       });
 
       const data = await res.json();
@@ -827,7 +827,6 @@ export default function ItineraryPage() {
           <div className="chat-input-row">
             <textarea
               className="chat-input"
-              placeholder="Add Ranjit Avenue markets to Day 2..."
               value={chatInput}
               onChange={e => setChatInput(e.target.value)}
               onKeyDown={handleKeyDown}
