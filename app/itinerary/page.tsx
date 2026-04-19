@@ -123,7 +123,7 @@ function DayCard({ day, index }: { day: Day; index: number }) {
           <div className="day-title">{day.title}</div>
           <div className="day-date">{formatDate(day.date)}</div>
         </div>
-        <div className="day-chevron">{open ? "−" : "+"}</div>
+        <div className="day-chevron">{open ? "-" : "+"}</div>
       </button>
       {open && (
         <div className="day-content">
