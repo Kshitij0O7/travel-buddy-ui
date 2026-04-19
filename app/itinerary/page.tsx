@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -64,6 +65,17 @@ interface ChatMessage {
 }
 
 // ─── Suggestion chips ────────────────────────────────────────────────────────
+
+function googleFlightsSearchUrl(fromLabel: string, toLabel: string, flight: Flight) {
+  const date = flight.departure.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? "";
+  const q = `Flights from ${fromLabel} to ${toLabel} on ${date}`;
+  return `https://www.google.com/travel/flights?hl=en&q=${encodeURIComponent(q)}`;
+}
+
+function googleHotelsSearchUrl(destination: string, hotel: Hotel) {
+  const q = `${hotel.name} ${destination}`;
+  return `https://www.google.com/travel/hotels?hl=en&q=${encodeURIComponent(q)}`;
+}
 
 const SUGGESTIONS = [
   "Add a local market visit",
@@ -143,9 +155,22 @@ function DayCard({ day, index }: { day: Day; index: number }) {
   );
 }
 
-function FlightCard({ flight, recommended }: { flight: Flight; recommended?: boolean }) {
+function FlightCard({
+  flight,
+  recommended,
+  href,
+}: {
+  flight: Flight;
+  recommended?: boolean;
+  href: string;
+}) {
   return (
-    <div className={`flight-card ${recommended ? "recommended" : ""}`}>
+    <Link
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`flight-card ${recommended ? "recommended" : ""}`}
+    >
       {recommended && <div className="rec-badge">Best pick</div>}
       <div className="flight-top">
         <div className="flight-airline">{flight.airline}</div>
@@ -163,13 +188,26 @@ function FlightCard({ flight, recommended }: { flight: Flight; recommended?: boo
         <div className="flight-time">{flight.arrival}</div>
       </div>
       {flight.price > 0 && <div className="flight-price">₹{flight.price.toLocaleString("en-IN")}</div>}
-    </div>
+    </Link>
   );
 }
 
-function HotelCard({ hotel, recommended }: { hotel: Hotel; recommended?: boolean }) {
+function HotelCard({
+  hotel,
+  recommended,
+  href,
+}: {
+  hotel: Hotel;
+  recommended?: boolean;
+  href: string;
+}) {
   return (
-    <div className={`hotel-card ${recommended ? "recommended" : ""}`}>
+    <Link
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`hotel-card ${recommended ? "recommended" : ""}`}
+    >
       {recommended && <div className="rec-badge">Top pick</div>}
       <div className="hotel-name">{hotel.name}</div>
       <div className="hotel-meta">
@@ -179,11 +217,12 @@ function HotelCard({ hotel, recommended }: { hotel: Hotel; recommended?: boolean
       </div>
       <div className="hotel-location">{hotel.location}</div>
       {hotel.totalPrice > 0 && (
-  <div className="hotel-price">
-    {hotel.currency || "₹"}{hotel.totalPrice.toLocaleString()} total stay
-  </div>
-)}
-    </div>
+        <div className="hotel-price">
+          {hotel.currency || "₹"}
+          {hotel.totalPrice.toLocaleString()} total stay
+        </div>
+      )}
+    </Link>
   );
 }
 
@@ -423,7 +462,7 @@ export default function ItineraryPage() {
         .section-title { font-family: var(--font-display); font-size: 1.5rem; font-weight: 300; color: var(--white); margin-bottom: 1.4rem; }
         .flights-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem; }
         .flights-column-label { font-size: 0.63rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.65rem; }
-        .flight-card { background: rgba(17,24,39,0.7); border: 1px solid var(--border); border-radius: 2px; padding: 1.1rem; margin-bottom: 0.65rem; position: relative; transition: border-color 0.2s; }
+        .flight-card { display: block; text-decoration: none; color: inherit; background: rgba(17,24,39,0.7); border: 1px solid var(--border); border-radius: 2px; padding: 1.1rem; margin-bottom: 0.65rem; position: relative; transition: border-color 0.2s; cursor: pointer; }
         .flight-card.recommended { border-color: var(--amber); }
         .flight-card:hover { border-color: rgba(212,145,58,0.4); }
         .rec-badge { position: absolute; top: -1px; right: 12px; background: var(--amber); color: var(--navy); font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase; padding: 3px 8px; font-weight: 500; }
@@ -439,7 +478,7 @@ export default function ItineraryPage() {
         .flight-price { font-family: var(--font-display); font-size: 1.15rem; color: var(--amber); }
         .recommendation-box { padding: 0.9rem 1.1rem; background: var(--amber-dim); border: 1px solid var(--border); border-left: 3px solid var(--amber); font-size: 0.83rem; color: rgba(245,240,232,0.8); line-height: 1.7; border-radius: 0 2px 2px 0; margin-top: 0.5rem; }
         .hotels-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0.85rem; margin-bottom: 1.25rem; }
-        .hotel-card { background: rgba(17,24,39,0.7); border: 1px solid var(--border); border-radius: 2px; padding: 1.1rem; position: relative; transition: border-color 0.2s; }
+        .hotel-card { display: block; text-decoration: none; color: inherit; background: rgba(17,24,39,0.7); border: 1px solid var(--border); border-radius: 2px; padding: 1.1rem; position: relative; transition: border-color 0.2s; cursor: pointer; }
         .hotel-card.recommended { border-color: var(--amber); }
         .hotel-card:hover { border-color: rgba(212,145,58,0.4); }
         .hotel-name { font-size: 0.92rem; color: var(--white); margin-bottom: 0.45rem; line-height: 1.4; }
@@ -709,11 +748,25 @@ export default function ItineraryPage() {
               <div className="flights-grid">
                 <div>
                   <div className="flights-column-label">{itinerary.origin} → {itinerary.destination}</div>
-                  {itinerary.flights?.outbound?.map((f, i) => <FlightCard key={i} flight={f} recommended={i === 0} />)}
+                  {itinerary.flights?.outbound?.map((f, i) => (
+                    <FlightCard
+                      key={i}
+                      flight={f}
+                      recommended={i === 0}
+                      href={googleFlightsSearchUrl(itinerary.origin, itinerary.destination, f)}
+                    />
+                  ))}
                 </div>
                 <div>
                   <div className="flights-column-label">{itinerary.destination} → {itinerary.origin}</div>
-                  {itinerary.flights?.return?.map((f, i) => <FlightCard key={i} flight={f} recommended={i === 0} />)}
+                  {itinerary.flights?.return?.map((f, i) => (
+                    <FlightCard
+                      key={i}
+                      flight={f}
+                      recommended={i === 0}
+                      href={googleFlightsSearchUrl(itinerary.destination, itinerary.origin, f)}
+                    />
+                  ))}
                 </div>
               </div>
               {itinerary.flights?.recommendation && (
@@ -726,7 +779,14 @@ export default function ItineraryPage() {
             <div>
               <div className="section-title">Where to stay</div>
               <div className="hotels-grid">
-                {itinerary.hotels?.map((hotel, i) => <HotelCard key={i} hotel={hotel} recommended={i === 0} />)}
+                {itinerary.hotels?.map((hotel, i) => (
+                  <HotelCard
+                    key={i}
+                    hotel={hotel}
+                    recommended={i === 0}
+                    href={googleHotelsSearchUrl(itinerary.destination, hotel)}
+                  />
+                ))}
               </div>
               {itinerary.hotelRecommendation && (
                 <div className="recommendation-box">{itinerary.hotelRecommendation}</div>

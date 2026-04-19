@@ -8,7 +8,8 @@ interface TripFormData {
   destination: string;
   startDate: string;
   endDate: string;
-  people: number;
+  adults: number;
+  children: number;
   budget: string;
   tripStyle: string;
 }
@@ -45,7 +46,8 @@ export default function Home() {
     destination: "",
     startDate: "",
     endDate: "",
-    people: 2,
+    adults: 2,
+    children: 0,
     budget: "",
     tripStyle: "",
   });
@@ -69,7 +71,11 @@ export default function Home() {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    setForm((prev) => ({ ...prev, [name]: value }));
+    if (name === "adults" || name === "children") {
+      setForm((prev) => ({ ...prev, [name]: parseInt(value, 10) || 0 }));
+    } else {
+      setForm((prev) => ({ ...prev, [name]: value }));
+    }
     if (formError) setFormError("");
   };
 
@@ -80,6 +86,8 @@ export default function Home() {
     if (!form.endDate) return "Please select a return date.";
     if (new Date(form.endDate) <= new Date(form.startDate))
       return "Return date must be after departure date.";
+    if (form.adults < 1) return "At least one adult is required.";
+    if (form.adults + form.children > 9) return "Maximum 9 travellers (adults + children).";
     return "";
   };
 
@@ -101,6 +109,10 @@ export default function Home() {
         body: JSON.stringify({ tripData: form }),
       });
 
+      if (res.status === 429) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || "Too many trip plans from this network. Try again in 24 hours.");
+      }
       if (!res.ok || !res.body) throw new Error("Failed to connect to planning service.");
 
       const reader = res.body.getReader();
@@ -743,10 +755,22 @@ export default function Home() {
                     <input type="date" name="endDate" min={form.startDate || today} value={form.endDate} onChange={handleChange} />
                   </div>
                   <div className="form-group">
-                    <label>Travellers</label>
-                    <select name="people" value={form.people} onChange={handleChange}>
-                      {[1,2,3,4,5,6,7,8].map(n => (
-                        <option key={n} value={n}>{n} {n === 1 ? "person" : "people"}</option>
+                    <label>Adults</label>
+                    <select name="adults" value={form.adults} onChange={handleChange}>
+                      {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
+                        <option key={n} value={n}>
+                          {n} {n === 1 ? "adult" : "adults"}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label>Children</label>
+                    <select name="children" value={form.children} onChange={handleChange}>
+                      {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                        <option key={n} value={n}>
+                          {n} {n === 1 ? "child" : "children"}
+                        </option>
                       ))}
                     </select>
                   </div>

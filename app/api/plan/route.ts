@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { resolveTrip } from "../../../helpers/resolver";
 import { flightTool } from "../../../tools/flight";
 import { hotelTool } from "../../../tools/hotel";
@@ -15,19 +15,49 @@ const SYNTHESIS_SKILL = loadSkill("travel-synthesis");
 
 export const maxDuration = 300;
 
+const PLAN_RATE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const PLAN_RATE_MAX = 2;
+const planRateHits = new Map<string, number[]>();
+
+function getClientIp(req: NextRequest): string {
+  const xf = req.headers.get("x-forwarded-for");
+  if (xf) return xf.split(",")[0]!.trim();
+  return req.headers.get("x-real-ip")?.trim() || "unknown";
+}
+
+/** Up to PLAN_RATE_MAX plan requests per IP per rolling 24h window. */
+function consumePlanRateToken(ip: string): { ok: true } | { ok: false; retryAfterSec: number } {
+  const now = Date.now();
+  const cutoff = now - PLAN_RATE_WINDOW_MS;
+  let hits = planRateHits.get(ip) ?? [];
+  hits = hits.filter((t) => t > cutoff);
+  if (hits.length >= PLAN_RATE_MAX) {
+    planRateHits.set(ip, hits);
+    const retryAfterSec = Math.ceil((hits[0]! + PLAN_RATE_WINDOW_MS - now) / 1000);
+    return { ok: false, retryAfterSec: Math.max(1, retryAfterSec) };
+  }
+  hits.push(now);
+  planRateHits.set(ip, hits);
+  return { ok: true };
+}
+
+type TripInfo = {
+  origin: string;
+  destination: string;
+  startDate: string;
+  endDate: string;
+  adults: number;
+  children: number;
+  budget: string;
+  tripStyle: string;
+};
+
 async function gatherDataInParallel(
-  tripInfo: {
-    origin: string;
-    destination: string;
-    startDate: string;
-    endDate: string;
-    people: number;
-    budget: string;
-    tripStyle: string;
-  },
+  tripInfo: TripInfo,
   emit: (event: SSEEvent) => void
 ): Promise<GatheredData> {
-  const { origin, destination, startDate, endDate, people, budget } = tripInfo;
+  const { origin, destination, startDate, endDate, adults, children, budget } = tripInfo;
+  const hotelGuests = adults + children;
   const days = Math.ceil(
     (new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)
   ) + 1;
@@ -50,13 +80,13 @@ async function gatherDataInParallel(
     await Promise.allSettled([
       runSubAgent(
         `You are a flight search agent. Call search_flights ONCE using EXACTLY these IATA codes: origin=${originIATA}, destination=${gatewayIATA}. Do not translate, modify, or guess — use them verbatim.`,
-        `Search flights: origin=${originIATA}, destination=${gatewayIATA}, date=${startDate}, adults=${people}`,
+        `Search flights: origin=${originIATA}, destination=${gatewayIATA}, date=${startDate}, adults=${adults}${children > 0 ? `, children=${children}` : ""}`,
         flightTool,
         anthropic
       ),
       runSubAgent(
         `You are a flight search agent. Call search_flights ONCE using EXACTLY these IATA codes: origin=${gatewayIATA}, destination=${originIATA}. Do not translate, modify, or guess — use them verbatim.`,
-        `Search flights: origin=${gatewayIATA}, destination=${originIATA}, date=${endDate}, adults=${people}`,
+        `Search flights: origin=${gatewayIATA}, destination=${originIATA}, date=${endDate}, adults=${adults}${children > 0 ? `, children=${children}` : ""}`,
         flightTool,
         anthropic
       ),
@@ -75,7 +105,7 @@ async function gatherDataInParallel(
       runSubAgent(
         `You are a hotel search agent. Call search_hotels once for the PRIMARY base city only. ${budget ? `Budget constraint: ${budget}.` : ""}. Hotel prices returned by search_hotels are TOTAL stay prices, not per night. 
         Always divide by number of nights to get per night rate before displaying. Show both: per night rate and total stay cost.`,
-        `Search hotels in ${primaryCity}, checkin=${startDate}, checkout=${endDate}, adults=${people}${budget ? `, budget=${budget}` : ""}`,
+        `Search hotels in ${primaryCity}, checkin=${startDate}, checkout=${endDate}, adults=${hotelGuests}${budget ? `, budget=${budget}` : ""}`,
         hotelTool,
         anthropic
       ),
@@ -125,18 +155,14 @@ async function gatherDataInParallel(
 
 async function streamSynthesis(
   gatheredData: GatheredData,
-  tripInfo: {
-    origin: string;
-    destination: string;
-    startDate: string;
-    endDate: string;
-    people: number;
-    budget: string;
-    tripStyle: string;
-  },
+  tripInfo: TripInfo,
   emit: (event: SSEEvent) => void
 ): Promise<string> {
-  const { origin, destination, startDate, endDate, people, budget, tripStyle } = tripInfo;
+  const { origin, destination, startDate, endDate, adults, children, budget, tripStyle } = tripInfo;
+  const party =
+    children > 0
+      ? `${adults} adult(s), ${children} child(ren)`
+      : `${adults} adult(s)`;
   const { resolution } = gatheredData;
 
   const days = Math.ceil(
@@ -145,7 +171,7 @@ async function streamSynthesis(
 
   const userMessage = `
 Create a ${days}-day itinerary from ${origin} to ${destination}.
-Dates: ${startDate} to ${endDate}. Travellers: ${people}.${budget ? ` Budget: ${budget}.` : ""}${tripStyle ? ` Style: ${tripStyle}.` : ""}
+Dates: ${startDate} to ${endDate}. Party: ${party}.${budget ? ` Budget: ${budget}.` : ""}${tripStyle ? ` Style: ${tripStyle}.` : ""}
 
 GEOGRAPHY RESOLUTION:
 ${JSON.stringify(resolution, null, 2)}
@@ -204,21 +230,42 @@ Now write the complete itinerary JSON. Remember: hotel prices are in ${resolutio
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { tripData } = body as {
-    tripData: {
-      origin: string;
-      destination: string;
-      startDate: string;
-      endDate: string;
-      people: number;
-      budget: string;
-      tripStyle: string;
-    };
+  const raw = body?.tripData as {
+    origin: string;
+    destination: string;
+    startDate: string;
+    endDate: string;
+    adults?: number;
+    children?: number;
+    people?: number;
+    budget: string;
+    tripStyle: string;
   };
 
-  if (!tripData?.origin || !tripData?.destination) {
-    return new Response(JSON.stringify({ error: "Missing trip data" }), { status: 400 });
+  if (!raw?.origin || !raw?.destination) {
+    return NextResponse.json({ error: "Missing trip data" }, { status: 400 });
   }
+
+  const rate = consumePlanRateToken(getClientIp(req));
+  if (!rate.ok) {
+    return NextResponse.json(
+      { error: "You can plan up to 2 trips per 24 hours from this network. Try again later." },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } }
+    );
+  }
+
+  const adults = Math.max(1, Math.min(9, Number(raw.adults ?? raw.people ?? 2)));
+  const children = Math.max(0, Math.min(8, Number(raw.children ?? 0)));
+  const tripData: TripInfo = {
+    origin: raw.origin,
+    destination: raw.destination,
+    startDate: raw.startDate,
+    endDate: raw.endDate,
+    adults,
+    children,
+    budget: raw.budget ?? "",
+    tripStyle: raw.tripStyle ?? "",
+  };
 
   const encoder = new TextEncoder();
 
