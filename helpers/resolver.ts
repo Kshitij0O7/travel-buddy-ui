@@ -18,9 +18,9 @@ export async function resolveTrip(
         {
           type: "text",
           text: RESOLVER_SKILL,
-          cache_control: { type: "ephemeral" },
         }
       ],
+      cache_control: { type: "ephemeral" },
       messages: [{
         role: "user",
         content: `Origin: ${origin}

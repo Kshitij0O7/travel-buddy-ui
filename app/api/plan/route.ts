@@ -210,9 +210,9 @@ Now write the complete itinerary JSON. Remember: hotel prices are in ${resolutio
       {
         type: "text",
         text: SYNTHESIS_SKILL,
-        cache_control: { type: "ephemeral" },
       }
     ],
+    cache_control: { type: "ephemeral" },
     messages: [{ role: "user", content: userMessage }],
   });
 
