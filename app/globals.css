@@ -1,26 +1,102 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  --color-tb-navy: #0a0e1a;
+  --color-tb-navy-mid: #111827;
+  --color-tb-navy-light: #1a2235;
+  --color-tb-amber: #d4913a;
+  --color-tb-amber-light: #e8aa5a;
+  --color-tb-white: #f5f0e8;
+  --color-tb-muted: rgb(245 240 232 / 0.45);
+  --color-tb-green: #4ade80;
+  --color-tb-red: #f87171;
+  --color-tb-border: rgb(212 145 58 / 0.2);
+  --color-tb-amber-dim: rgb(212 145 58 / 0.12);
+  --color-tb-green-dim: rgb(74 222 128 / 0.1);
+  --color-tb-chat-bg: #0d1220;
+
+  --font-display: var(--font-cormorant), ui-serif, Georgia, serif;
+  --font-body: var(--font-dm-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono-tb: var(--font-jetbrains), ui-monospace, monospace;
+
+  --animate-tb-shimmer: tb-shimmer 1.8s infinite;
+  --animate-tb-pulse: tb-pulse 1s ease-in-out infinite;
+  --animate-tb-blink: tb-blink 1s step-end infinite;
+  --animate-tb-fade-up: tb-fade-up 0.45s ease both;
+  --animate-tb-slide-up: tb-slide-up 0.25s ease;
+  --animate-tb-typing: tb-typing-bounce 1.2s ease infinite;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@keyframes tb-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
   }
 }
 
+@keyframes tb-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.7);
+  }
+}
+
+@keyframes tb-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes tb-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tb-slide-up {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes tb-typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-5px);
+    opacity: 1;
+  }
+}
+
+html {
+  height: 100%;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100%;
 }
