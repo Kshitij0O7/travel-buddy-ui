@@ -239,7 +239,7 @@ Now write the complete itinerary JSON. Remember: hotel prices are in ${resolutio
 
   const stream = anthropic.messages.stream({
     model: "claude-sonnet-4-5",
-    max_tokens: 16000,
+    max_tokens: 20000,
     system: [
       {
         type: "text",

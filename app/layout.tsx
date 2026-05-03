@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Cormorant_Garamond, DM_Sans, JetBrains_Mono } from "next/font/google";
+import { AccountMenu } from "../components/auth/account-menu";
+import { AuthProvider } from "../components/auth/auth-provider";
 import "./globals.css";
 
 const fontCormorant = Cormorant_Garamond({
@@ -36,7 +38,12 @@ export default function RootLayout({
       lang="en"
       className={`${fontCormorant.variable} ${fontDmSans.variable} ${fontJetbrains.variable} h-full antialiased`}
     >
-      <body className="min-h-full bg-tb-navy font-body text-tb-white">{children}</body>
+      <body className="min-h-full bg-tb-navy font-body text-tb-white">
+        <AuthProvider>
+          {children}
+          <AccountMenu />
+        </AuthProvider>
+      </body>
     </html>
   );
 }

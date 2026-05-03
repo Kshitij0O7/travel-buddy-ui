@@ -4,7 +4,7 @@ type Props = { itinerary: Itinerary; onNewTrip: () => void };
 
 export function ItineraryHero({ itinerary, onNewTrip }: Props) {
   return (
-    <div className="mx-auto max-w-[860px] animate-tb-fade-up px-6 pb-8 pt-12">
+    <div className="mx-auto max-w-[860px] animate-tb-fade-up px-6 pb-8 pt-6">
       <button
         type="button"
         className="mb-8 cursor-pointer border-none bg-transparent p-0 text-[0.75rem] uppercase tracking-[0.2em] text-tb-amber opacity-70 transition-opacity hover:opacity-100"
