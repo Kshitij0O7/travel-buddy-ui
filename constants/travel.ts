@@ -1,5 +1,3 @@
-export const TRIP_STYLES = ["Adventure", "Cultural", "Relaxation", "Foodie", "Budget", "Luxury"] as const;
-
 export const AGENT_META: Record<string, { label: string; icon: string }> = {
   resolver: { label: "Resolving destinations", icon: "⊕" },
   flights_out: { label: "Outbound flights", icon: "✈" },

@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AGENT_META } from "../constants/travel";
 import type { AgentStatus, PlanStreamEvent, TripFormData } from "../interfaces/trip";
+import type { UserInfo } from "../interfaces/user-info";
 import { validateTripForm } from "../lib/trip-form";
+import { validateUserInfo } from "../lib/validate-user-info";
 
 const initialForm: TripFormData = {
   origin: "",
@@ -13,23 +15,34 @@ const initialForm: TripFormData = {
   endDate: "",
   adults: 2,
   children: 0,
+  infants: 0,
+  seniors: 0,
   budget: "",
-  tripStyle: "",
+};
+
+const initialUserInfo: UserInfo = {
+  userType: "",
+  tripPace: "",
+  tripStyle: [],
+  diet: [],
+  specialRequests: [""],
 };
 
 export function useTripPlanner() {
   const router = useRouter();
   const [phase, setPhase] = useState<"form" | "loading" | "streaming">("form");
+  const [formStep, setFormStep] = useState<"trip" | "about">("trip");
   const [agents, setAgents] = useState<AgentStatus[]>([]);
   const [synthesisText, setSynthesisText] = useState("");
   const [error, setError] = useState("");
   const [formError, setFormError] = useState("");
   const [form, setForm] = useState<TripFormData>(initialForm);
+  const [userInfo, setUserInfo] = useState<UserInfo>(initialUserInfo);
   const streamRef = useRef("");
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
   const streamBoxRef = useRef<HTMLPreElement>(null);
-  const formRef = useRef(form);
-  formRef.current = form;
+  const planContextRef = useRef({ trip: form, userInfo });
+  planContextRef.current = { trip: form, userInfo };
 
   useEffect(() => {
     return () => {
@@ -91,16 +104,18 @@ export function useTripPlanner() {
 
         case "done":
           if (event.itinerary) {
-            const tripData = formRef.current;
+            const { trip, userInfo: ui } = planContextRef.current;
             sessionStorage.setItem(
               "itinerary",
               JSON.stringify({
                 itinerary: event.itinerary,
-                tripData,
+                tripData: trip,
+                userInfo: ui,
                 generatedAt: new Date().toISOString(),
               })
             );
-            sessionStorage.setItem("tripData", JSON.stringify(tripData));
+            sessionStorage.setItem("tripData", JSON.stringify(trip));
+            sessionStorage.setItem("userInfo", JSON.stringify(ui));
             router.push("/itinerary");
           }
           break;
@@ -108,6 +123,7 @@ export function useTripPlanner() {
         case "error":
           setError(event.message || "Planning failed.");
           setPhase("form");
+          setFormStep("about");
           break;
       }
     },
@@ -116,7 +132,7 @@ export function useTripPlanner() {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    if (name === "adults" || name === "children") {
+    if (name === "adults" || name === "children" || name === "infants" || name === "seniors") {
       setForm((prev) => ({ ...prev, [name]: parseInt(value, 10) || 0 }));
     } else {
       setForm((prev) => ({ ...prev, [name]: value }));
@@ -124,32 +140,54 @@ export function useTripPlanner() {
     if (formError) setFormError("");
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleTripNext = (e: React.FormEvent) => {
     e.preventDefault();
     const err = validateTripForm(form);
     if (err) {
       setFormError(err);
       return;
     }
+    setFormError("");
+    setError("");
+    setFormStep("about");
+  };
 
+  const handleAboutBack = () => {
+    setFormError("");
+    setFormStep("trip");
+  };
+
+  const startPlanStream = async () => {
     setError("");
     setSynthesisText("");
     streamRef.current = "";
     setAgents([]);
     setPhase("loading");
 
+    const userPayload: UserInfo = {
+      ...userInfo,
+      specialRequests: userInfo.specialRequests.map((s) => s.trim()).filter(Boolean),
+    };
+
     try {
       const res = await fetch("/api/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tripData: form }),
+        body: JSON.stringify({ tripData: form, userInfo: userPayload }),
       });
 
       if (res.status === 429) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error || "Too many trip plans from this network. Try again in 24 hours.");
       }
-      if (!res.ok || !res.body) throw new Error("Failed to connect to planning service.");
+      if (!res.ok || !res.body) {
+        const errBody = await res.json().catch(() => ({}));
+        const msg =
+          typeof errBody === "object" && errBody && "error" in errBody
+            ? String((errBody as { error?: string }).error)
+            : "Failed to connect to planning service.";
+        throw new Error(msg || "Failed to connect to planning service.");
+      }
 
       const reader = res.body.getReader();
       readerRef.current = reader;
@@ -177,7 +215,19 @@ export function useTripPlanner() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
       setPhase("form");
+      setFormStep("about");
     }
+  };
+
+  const handleAboutSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const err = validateUserInfo(userInfo);
+    if (err) {
+      setFormError(err);
+      return;
+    }
+    setFormError("");
+    await startPlanStream();
   };
 
   const today = new Date().toISOString().split("T")[0];
@@ -186,15 +236,19 @@ export function useTripPlanner() {
 
   return {
     phase,
+    formStep,
     form,
-    setForm,
+    userInfo,
+    setUserInfo,
     agents,
     synthesisText,
     streamBoxRef,
     formError,
     error,
     handleChange,
-    handleSubmit,
+    handleTripNext,
+    handleAboutSubmit,
+    handleAboutBack,
     today,
     doneCount,
     totalAgents,

@@ -5,9 +5,12 @@ import { hotelTool } from "../../../tools/hotel";
 import { weatherTool } from "../../../tools/weather";
 import { mapsTool } from "../../../tools/maps";
 import { contentTool } from "../../../tools/content";
-import {loadSkill} from "../../../helpers/skills";
+import { loadSkill } from "../../../helpers/skills";
 import { SSEEvent } from "../../../interfaces/sse";
 import { GatheredData } from "../../../interfaces/data";
+import type { UserInfo } from "../../../interfaces/user-info";
+import { formatAboutYouBlock, formatDemographicsLine } from "../../../lib/format-personalization";
+import { normalizeUserInfo } from "../../../lib/normalize-user-info";
 import { runSubAgent } from "../../../helpers/runAgent";
 import { anthropic } from "../index";
 
@@ -47,17 +50,33 @@ type TripInfo = {
   startDate: string;
   endDate: string;
   adults: number;
+  /** Ages 2–12 */
   children: number;
+  /** Ages 0–2 */
+  infants: number;
+  /** Ages 60+ */
+  seniors: number;
   budget: string;
-  tripStyle: string;
 };
 
 async function gatherDataInParallel(
   tripInfo: TripInfo,
+  userInfo: UserInfo,
   emit: (event: SSEEvent) => void
 ): Promise<GatheredData> {
-  const { origin, destination, startDate, endDate, adults, children, budget } = tripInfo;
-  const hotelGuests = adults + children;
+  const { origin, destination, startDate, endDate, adults, children, infants, seniors, budget } = tripInfo;
+  const demographicsLine = formatDemographicsLine(tripInfo);
+  const aboutYouLine = formatAboutYouBlock(userInfo);
+  const hotelGuests = adults + children + infants + seniors;
+
+  const flightPaxHint = [
+    `adults=${adults}`,
+    children > 0 ? `children(2-12y)=${children}` : "",
+    infants > 0 ? `infants(0-2y)=${infants}` : "",
+    seniors > 0 ? `seniors(60+y)=${seniors}` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
   const days = Math.ceil(
     (new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)
   ) + 1;
@@ -80,13 +99,13 @@ async function gatherDataInParallel(
     await Promise.allSettled([
       runSubAgent(
         `You are a flight search agent. Call search_flights ONCE using EXACTLY these IATA codes: origin=${originIATA}, destination=${gatewayIATA}. Do not translate, modify, or guess — use them verbatim.`,
-        `Search flights: origin=${originIATA}, destination=${gatewayIATA}, date=${startDate}, adults=${adults}${children > 0 ? `, children=${children}` : ""}`,
+        `Search flights: origin=${originIATA}, destination=${gatewayIATA}, date=${startDate}, ${flightPaxHint}`,
         flightTool,
         anthropic
       ),
       runSubAgent(
         `You are a flight search agent. Call search_flights ONCE using EXACTLY these IATA codes: origin=${gatewayIATA}, destination=${originIATA}. Do not translate, modify, or guess — use them verbatim.`,
-        `Search flights: origin=${gatewayIATA}, destination=${originIATA}, date=${endDate}, adults=${adults}${children > 0 ? `, children=${children}` : ""}`,
+        `Search flights: origin=${gatewayIATA}, destination=${originIATA}, date=${endDate}, ${flightPaxHint}`,
         flightTool,
         anthropic
       ),
@@ -97,8 +116,15 @@ async function gatherDataInParallel(
         anthropic
       ),
       runSubAgent(
-        "You are a content discovery agent. Call get_content once for the given destination.",
-        `Get local content and highlights for ${destination}`,
+        `You are a content discovery agent. Call get_content once for the given destination. Use the traveller demographics and "About you" preferences below to prioritise places, pacing, food, and experiences that match this group (family vs solo, diet, pace, interests, special needs).`,
+        `Destination: ${destination}
+
+${demographicsLine}
+
+TRAVELLER PREFERENCES (align your research with these):
+${aboutYouLine}
+
+Task: Get local content and highlights for ${destination} that fit this traveller profile.`,
         contentTool,
         anthropic
       ),
@@ -156,13 +182,19 @@ async function gatherDataInParallel(
 async function streamSynthesis(
   gatheredData: GatheredData,
   tripInfo: TripInfo,
+  userInfo: UserInfo,
   emit: (event: SSEEvent) => void
 ): Promise<string> {
-  const { origin, destination, startDate, endDate, adults, children, budget, tripStyle } = tripInfo;
-  const party =
-    children > 0
-      ? `${adults} adult(s), ${children} child(ren)`
-      : `${adults} adult(s)`;
+  const { origin, destination, startDate, endDate, adults, children, infants, seniors, budget } = tripInfo;
+  const personalisationBlock = `${formatDemographicsLine(tripInfo)}
+
+ABOUT YOU (shape pacing, activities, dining, and tips to match this profile):
+${formatAboutYouBlock(userInfo)}`;
+  const partyParts = [`${adults} adult(s)`];
+  if (children > 0) partyParts.push(`${children} child(ren) (2–12 years)`);
+  if (infants > 0) partyParts.push(`${infants} infant(s) (0–2 years)`);
+  if (seniors > 0) partyParts.push(`${seniors} senior(s) (>60 years)`);
+  const party = partyParts.join(", ");
   const { resolution } = gatheredData;
 
   const days = Math.ceil(
@@ -171,7 +203,9 @@ async function streamSynthesis(
 
   const userMessage = `
 Create a ${days}-day itinerary from ${origin} to ${destination}.
-Dates: ${startDate} to ${endDate}. Party: ${party}.${budget ? ` Budget: ${budget}.` : ""}${tripStyle ? ` Style: ${tripStyle}.` : ""}
+Dates: ${startDate} to ${endDate}. Party: ${party}.${budget ? ` Budget: ${budget}.` : ""}
+
+${personalisationBlock}
 
 GEOGRAPHY RESOLUTION:
 ${JSON.stringify(resolution, null, 2)}
@@ -237,13 +271,27 @@ export async function POST(req: NextRequest) {
     endDate: string;
     adults?: number;
     children?: number;
+    infants?: number;
+    seniors?: number;
     people?: number;
     budget: string;
-    tripStyle: string;
   };
 
   if (!raw?.origin || !raw?.destination) {
     return NextResponse.json({ error: "Missing trip data" }, { status: 400 });
+  }
+
+  const userInfo = normalizeUserInfo(body?.userInfo);
+  if (
+    !userInfo.userType ||
+    !userInfo.tripPace ||
+    userInfo.tripStyle.length === 0 ||
+    userInfo.diet.length === 0
+  ) {
+    return NextResponse.json(
+      { error: "Complete About you: traveller type, pace, at least one trip style, and one diet preference." },
+      { status: 400 }
+    );
   }
 
   const rate = consumePlanRateToken(getClientIp(req));
@@ -256,6 +304,8 @@ export async function POST(req: NextRequest) {
 
   const adults = Math.max(1, Math.min(9, Number(raw.adults ?? raw.people ?? 2)));
   const children = Math.max(0, Math.min(8, Number(raw.children ?? 0)));
+  const infants = Math.max(0, Math.min(4, Number(raw.infants ?? 0)));
+  const seniors = Math.max(0, Math.min(8, Number(raw.seniors ?? 0)));
   const tripData: TripInfo = {
     origin: raw.origin,
     destination: raw.destination,
@@ -263,8 +313,9 @@ export async function POST(req: NextRequest) {
     endDate: raw.endDate,
     adults,
     children,
+    infants,
+    seniors,
     budget: raw.budget ?? "",
-    tripStyle: raw.tripStyle ?? "",
   };
 
   const encoder = new TextEncoder();
@@ -276,8 +327,8 @@ export async function POST(req: NextRequest) {
       };
 
       try {
-        const gatheredData = await gatherDataInParallel(tripData, emit);
-        const rawText = await streamSynthesis(gatheredData, tripData, emit);
+        const gatheredData = await gatherDataInParallel(tripData, userInfo, emit);
+        const rawText = await streamSynthesis(gatheredData, tripData, userInfo, emit);
 
         let cleaned = rawText
           .replace(/^```json\n?/i, "")

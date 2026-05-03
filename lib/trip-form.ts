@@ -8,6 +8,8 @@ export function validateTripForm(form: TripFormData): string {
   if (new Date(form.endDate) <= new Date(form.startDate))
     return "Return date must be after departure date.";
   if (form.adults < 1) return "At least one adult is required.";
-  if (form.adults + form.children > 9) return "Maximum 9 travellers (adults + children).";
+  const total =
+    form.adults + form.children + form.infants + form.seniors;
+  if (total > 15) return "Maximum 15 travellers in total.";
   return "";
 }
