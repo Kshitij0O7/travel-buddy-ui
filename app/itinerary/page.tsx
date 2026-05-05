@@ -14,7 +14,7 @@ import type { Itinerary, ItineraryTabKey } from "../../interfaces/itinerary";
 
 export default function ItineraryPage() {
   const router = useRouter();
-  const { requireAuth } = useAuth();
+  const { requireAuth, ready: authReady } = useAuth();
   const [itinerary, setItinerary] = useState<Itinerary | null>(null);
   const [activeTab, setActiveTab] = useState<ItineraryTabKey>("itinerary");
 
@@ -55,6 +55,7 @@ export default function ItineraryPage() {
       <ItineraryTabPanels itinerary={itinerary} activeTab={activeTab} />
 
       <ItineraryChat
+        authReady={authReady}
         chatOpen={chatOpen}
         onOpen={() => requireAuth(() => setChatOpen(true))}
         onClose={() => setChatOpen(false)}

@@ -3,6 +3,8 @@
 import type { ChatMessage } from "../../interfaces/itinerary";
 
 type Props = {
+  /** When false, the floating open control is disabled until auth has finished initialising. */
+  authReady?: boolean;
   chatOpen: boolean;
   onOpen: () => void;
   onClose: () => void;
@@ -18,6 +20,7 @@ type Props = {
 };
 
 export function ItineraryChat({
+  authReady = true,
   chatOpen,
   onOpen,
   onClose,
@@ -36,9 +39,10 @@ export function ItineraryChat({
       {!chatOpen && (
         <button
           type="button"
-          className="fixed bottom-8 right-8 z-50 flex h-[52px] w-[52px] cursor-pointer items-center justify-center rounded-full border-none bg-tb-amber text-[1.3rem] text-tb-navy shadow-[0_4px_20px_rgb(212_145_58/0.35)] transition-transform hover:scale-105 hover:bg-tb-amber-light max-[600px]:bottom-5 max-[600px]:right-5"
+          className="fixed bottom-8 right-8 z-50 flex h-[52px] w-[52px] cursor-pointer items-center justify-center rounded-full border-none bg-tb-amber text-[1.3rem] text-tb-navy shadow-[0_4px_20px_rgb(212_145_58/0.35)] transition-transform hover:scale-105 hover:bg-tb-amber-light disabled:cursor-not-allowed disabled:opacity-40 max-[600px]:bottom-5 max-[600px]:right-5"
           onClick={onOpen}
-          title="Customise itinerary"
+          disabled={!authReady}
+          title={authReady ? "Customise itinerary" : "Loading account…"}
         >
           ✦
         </button>

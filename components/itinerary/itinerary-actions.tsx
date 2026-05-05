@@ -22,7 +22,7 @@ const btnClass =
 
 export function ItineraryActions({ itinerary }: { itinerary: Itinerary }) {
   const [notice, setNotice] = useState<string | null>(null);
-  const { requireAuth } = useAuth();
+  const { requireAuth, ready: authReady } = useAuth();
 
   const json = JSON.stringify(itinerary, null, 2);
   const filename = itineraryFilename(itinerary);
@@ -88,15 +88,19 @@ export function ItineraryActions({ itinerary }: { itinerary: Itinerary }) {
       >
         <button
           type="button"
-          className={`${btnClass} border-amber-500/35 bg-transparent text-tb-muted hover:border-tb-amber hover:text-tb-amber-light`}
+          className={`${btnClass} border-amber-500/35 bg-transparent text-tb-muted hover:border-tb-amber hover:text-tb-amber-light disabled:cursor-not-allowed disabled:opacity-40`}
           onClick={() => requireAuth(() => void shareItinerary())}
+          disabled={!authReady}
+          title={!authReady ? "Loading account…" : undefined}
         >
           Share Itinerary
         </button>
         <button
           type="button"
-          className={`${btnClass} border-none bg-tb-amber text-tb-navy hover:bg-tb-amber-light`}
+          className={`${btnClass} border-none bg-tb-amber text-tb-navy hover:bg-tb-amber-light disabled:cursor-not-allowed disabled:opacity-40`}
           onClick={() => requireAuth(downloadItinerary)}
+          disabled={!authReady}
+          title={!authReady ? "Loading account…" : undefined}
         >
           Download Itinerary
         </button>

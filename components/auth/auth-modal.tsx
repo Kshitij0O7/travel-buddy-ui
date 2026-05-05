@@ -8,6 +8,8 @@ type Mode = "signin" | "signup";
 type Props = {
   open: boolean;
   onClose: () => void;
+  /** When set, sign-in forms are hidden (e.g. Firebase env not configured on the host). */
+  blockedMessage?: string | null;
   onEmailSignIn: (email: string, password: string) => Promise<UserCredential>;
   onEmailSignUp: (email: string, password: string) => Promise<UserCredential>;
   onGoogleSignIn: () => Promise<UserCredential>;
@@ -51,6 +53,7 @@ function readableError(e: unknown) {
 export function AuthModal({
   open,
   onClose,
+  blockedMessage,
   onEmailSignIn,
   onEmailSignUp,
   onGoogleSignIn,
@@ -72,6 +75,42 @@ export function AuthModal({
   }, [open]);
 
   if (!open) return null;
+
+  if (blockedMessage) {
+    return (
+      <div
+        className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Sign in unavailable"
+        onClick={onClose}
+      >
+        <div
+          className="w-full max-w-[420px] animate-tb-slide-up rounded-xl border border-tb-border bg-tb-chat-bg p-6 shadow-[0_8px_40px_rgb(0_0_0/0.5)]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="mb-1 flex items-start justify-between">
+            <div>
+              <div className="font-display text-[1.6rem] font-light text-tb-white">Sign in unavailable</div>
+              <div className="mt-0.5 text-[0.7rem] uppercase tracking-[0.14em] text-tb-amber">Configuration</div>
+            </div>
+            <button
+              type="button"
+              className="cursor-pointer border-none bg-transparent p-1 text-[1.1rem] text-tb-muted transition-colors hover:text-tb-white"
+              onClick={onClose}
+              aria-label="Close"
+            >
+              ✕
+            </button>
+          </div>
+          <p className="mt-4 text-[0.82rem] leading-relaxed text-[rgb(245_240_232/0.78)]">{blockedMessage}</p>
+          <button type="button" className={`${primaryBtn} mt-6`} onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const submitEmail = async (e: React.FormEvent) => {
     e.preventDefault();
