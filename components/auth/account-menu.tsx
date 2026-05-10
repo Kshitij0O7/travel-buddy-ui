@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "./auth-provider";
 
 function initialOf(user: { displayName?: string | null; email?: string | null }) {
@@ -9,6 +10,7 @@ function initialOf(user: { displayName?: string | null; email?: string | null })
 }
 
 export function AccountMenu() {
+  const router = useRouter();
   const { user, ready, signOutUser } = useAuth();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -67,7 +69,10 @@ export function AccountMenu() {
             type="button"
             role="menuitem"
             className="block w-full cursor-pointer border-none bg-transparent px-4 py-2.5 text-left font-body text-[0.85rem] text-tb-white transition-colors hover:bg-tb-amber-dim hover:text-tb-amber-light"
-            onClick={() => setOpen(false)}
+            onClick={() => {
+              setOpen(false);
+              router.push("/trips");
+            }}
           >
             Your trips
           </button>

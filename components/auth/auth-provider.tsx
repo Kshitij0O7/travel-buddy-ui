@@ -20,6 +20,7 @@ import {
   type User,
 } from "firebase/auth";
 import { getFirebaseAuthClient, getGoogleAuthProvider } from "../../lib/firebase";
+import { upsertCurrentUser } from "../../lib/api-client";
 import { AuthModal } from "./auth-modal";
 
 type AuthContextValue = {
@@ -49,9 +50,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setReady(true);
       return;
     }
+    let lastSyncedUid: string | null = null;
     return onAuthStateChanged(a, (next) => {
       setUser(next);
       setReady(true);
+
+      // Mirror the auth state into our backend (creates the `users/{uid}` doc on
+      // first sign-in, refreshes profile fields on subsequent ones). Best-effort:
+      // failures here must not block the UI flow.
+      if (next && next.uid !== lastSyncedUid) {
+        lastSyncedUid = next.uid;
+        void upsertCurrentUser({
+          email: next.email,
+          displayName: next.displayName,
+          photoURL: next.photoURL,
+        }).catch((err) => {
+          console.warn("Failed to sync user with backend:", err);
+        });
+      } else if (!next) {
+        lastSyncedUid = null;
+      }
+
       if (next && pendingActionRef.current) {
         const fn = pendingActionRef.current;
         pendingActionRef.current = null;

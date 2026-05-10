@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Cormorant_Garamond, DM_Sans, JetBrains_Mono } from "next/font/google";
 import { AccountMenu } from "../components/auth/account-menu";
 import { AuthProvider } from "../components/auth/auth-provider";
+import { SignInButton } from "../components/auth/sign-in-button";
 import "./globals.css";
 
 const fontCormorant = Cormorant_Garamond({
@@ -42,6 +43,7 @@ export default function RootLayout({
         <AuthProvider>
           {children}
           <AccountMenu />
+          <SignInButton />
         </AuthProvider>
       </body>
     </html>
