@@ -1,5 +1,5 @@
 import type { Itinerary, ItineraryTabKey } from "../../interfaces/itinerary";
-import { googleFlightsSearchUrl, googleHotelsSearchUrl } from "../../lib/travel-links";
+import { skyscannerFlightsSearchUrl, tripadvisorHotelSearchUrl } from "../../lib/travel-links";
 import { DayCard } from "./day-card";
 import { FlightCard } from "./flight-card";
 import { HotelCard } from "./hotel-card";
@@ -33,7 +33,7 @@ export function ItineraryTabPanels({ itinerary, activeTab }: Props) {
                   key={i}
                   flight={f}
                   recommended={i === 0}
-                  href={googleFlightsSearchUrl(itinerary.origin, itinerary.destination, f)}
+                  href={skyscannerFlightsSearchUrl(itinerary.origin, itinerary.destination, f)}
                 />
               ))}
             </div>
@@ -46,7 +46,7 @@ export function ItineraryTabPanels({ itinerary, activeTab }: Props) {
                   key={i}
                   flight={f}
                   recommended={i === 0}
-                  href={googleFlightsSearchUrl(itinerary.destination, itinerary.origin, f)}
+                  href={skyscannerFlightsSearchUrl(itinerary.destination, itinerary.origin, f)}
                 />
               ))}
             </div>
@@ -68,7 +68,7 @@ export function ItineraryTabPanels({ itinerary, activeTab }: Props) {
                 key={i}
                 hotel={hotel}
                 recommended={i === 0}
-                href={googleHotelsSearchUrl(itinerary.destination, hotel)}
+                href={tripadvisorHotelSearchUrl(itinerary.destination, hotel)}
               />
             ))}
           </div>
