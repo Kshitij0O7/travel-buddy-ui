@@ -35,8 +35,8 @@ export async function executeTool(
           url = `${API_BASE}/api/v1/maps/mcp/context?${params}`;
           break;
         case "get_content":
-          params.set("location", String(toolInput.location));
-          url = `${API_BASE}/api/v1/content/mcp?${params}`;
+          params.set("query", String(toolInput.query));
+          url = `${API_BASE}/api/v1/content?${params}`;
           break;
         default:
           return JSON.stringify({ error: `Unknown tool: ${toolName}` });

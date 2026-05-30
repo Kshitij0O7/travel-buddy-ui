@@ -129,7 +129,7 @@ Task: Get local content and highlights for ${destination} that fit this travelle
         anthropic
       ),
       runSubAgent(
-        `You are a hotel search agent. Call search_hotels once for the PRIMARY base city only. ${budget ? `Budget constraint: ${budget}.` : ""}. Hotel prices returned by search_hotels are TOTAL stay prices, not per night. 
+        `You are a hotel search agent. Call search_hotels once for the PRIMARY base city only. ${budget ? `Budget constraint: ${budget}.` : ""}.
         Always divide by number of nights to get per night rate before displaying. Show both: per night rate and total stay cost.`,
         `Search hotels in ${primaryCity}, checkin=${startDate}, checkout=${endDate}, adults=${hotelGuests}${budget ? `, budget=${budget}` : ""}`,
         hotelTool,

@@ -11,7 +11,10 @@ export async function runSubAgent(
       { role: "user", content: userMessage },
     ];
   
-    for (let i = 0; i < 5; i++) {
+    // Max 3 iterations to prevent runaway credit usage if an LLM get confused
+    const maxLoops = 3; 
+
+    for (let i = 0; i < maxLoops; i++) {
       const response = await anthropic.messages.create({
         model: "claude-sonnet-4-5",
         max_tokens: 4096,
@@ -19,8 +22,12 @@ export async function runSubAgent(
         tools: [tool],
         messages,
       });
+
+      console.log(`[${tool.name}] API Request ID: ${response._request_id} | Stop Reason: ${response.stop_reason}`);
   
+      // Scenario A: Claude wants to use a tool
       if (response.stop_reason === "tool_use") {
+        // Essential: You must push Claude's tool_use request to history first
         messages.push({ role: "assistant", content: response.content });
   
         const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
@@ -33,35 +40,28 @@ export async function runSubAgent(
             }))
         );
   
+        // Append results as a user turn and continue the loop
         messages.push({ role: "user", content: toolResults });
         continue;
       }
   
+      // Scenario B: Claude is completely finished and returning the final processed answer
       if (response.stop_reason === "end_turn") {
-        for (let m = messages.length - 1; m >= 0; m--) {
-          const msg = messages[m];
-          if (msg.role === "user" && Array.isArray(msg.content)) {
-            const tr = msg.content.find(
-              (c): c is Anthropic.ToolResultBlockParam =>
-                (c as Anthropic.ToolResultBlockParam).type === "tool_result"
-            );
-            if (tr) {
-              const raw =
-                typeof tr.content === "string"
-                  ? tr.content
-                  : Array.isArray(tr.content)
-                    ? ((tr.content[0] as { text?: string })?.text ?? JSON.stringify(tr.content[0]))
-                    : String(tr.content);
-              try {
-                return JSON.parse(raw);
-              } catch {
-                return raw;
-              }
-            }
+        // Find the text or structured blocks from the CURRENT fresh response
+        const textBlock = response.content.find((b) => b.type === "text");
+        
+        if (textBlock && "text" in textBlock) {
+          try {
+            return JSON.parse(textBlock.text);
+          } catch {
+            return textBlock.text; // Return raw string if it's not JSON
           }
         }
-        return null;
+        
+        // If it responded directly with a structure or content blocks
+        return response.content; 
       }
+
       break;
     }
     return null;
