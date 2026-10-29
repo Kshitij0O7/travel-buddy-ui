@@ -2,7 +2,6 @@
 
 import { AboutYouForm } from "../components/home/about-you-form";
 import { AgentLoadingPanel } from "../components/home/agent-loading-panel";
-import { SynthesisPanel } from "../components/home/synthesis-panel";
 import { TripPlanForm } from "../components/home/trip-plan-form";
 import { TripPlanShell } from "../components/home/trip-plan-shell";
 import { useTripPlanner } from "../hooks/useTripPlanner";
@@ -14,9 +13,6 @@ export default function Home() {
     form,
     userInfo,
     setUserInfo,
-    agents,
-    synthesisText,
-    streamBoxRef,
     formError,
     error,
     handleChange,
@@ -24,8 +20,6 @@ export default function Home() {
     handleAboutSubmit,
     handleAboutBack,
     today,
-    doneCount,
-    totalAgents,
   } = useTripPlanner();
 
   return (
@@ -52,13 +46,7 @@ export default function Home() {
         />
       )}
 
-      {phase === "loading" && (
-        <AgentLoadingPanel agents={agents} doneCount={doneCount} totalAgents={totalAgents} />
-      )}
-
-      {phase === "streaming" && (
-        <SynthesisPanel agents={agents} synthesisText={synthesisText} streamBoxRef={streamBoxRef} />
-      )}
+      {phase === "loading" && <AgentLoadingPanel />}
     </TripPlanShell>
   );
 }
