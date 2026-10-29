@@ -53,9 +53,8 @@ export async function generateMetadata(
   const { itinerary, origin, destination, since, till } = outcome.data;
   const title = `${origin} → ${destination} · TravelBuddy`;
   const description =
-    itinerary?.summary ||
     `A ${itinerary?.duration || ""} itinerary from ${origin} to ${destination}` +
-      (since && till ? ` (${since} to ${till}).` : ".");
+    (since && till ? ` (${since} to ${till}).` : ".");
   return {
     title,
     description,

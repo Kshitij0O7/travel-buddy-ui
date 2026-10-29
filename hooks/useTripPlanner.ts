@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AGENT_META } from "../constants/travel";
-import type { AgentStatus, PlanStreamEvent, TripFormData } from "../interfaces/trip";
+import type { TripFormData } from "../interfaces/trip";
+import type { Itinerary } from "../interfaces/itinerary";
 import type { UserInfo } from "../interfaces/user-info";
 import { validateTripForm } from "../lib/trip-form";
 import { validateUserInfo } from "../lib/validate-user-info";
+
+const API_BASE = process.env.NEXT_PUBLIC_TRAVEL_API_URL || "";
 
 const initialForm: TripFormData = {
   origin: "",
@@ -30,105 +32,19 @@ const initialUserInfo: UserInfo = {
 
 export function useTripPlanner() {
   const router = useRouter();
-  const [phase, setPhase] = useState<"form" | "loading" | "streaming">("form");
+  const [phase, setPhase] = useState<"form" | "loading">("form");
   const [formStep, setFormStep] = useState<"trip" | "about">("trip");
-  const [agents, setAgents] = useState<AgentStatus[]>([]);
-  const [synthesisText, setSynthesisText] = useState("");
   const [error, setError] = useState("");
   const [formError, setFormError] = useState("");
   const [form, setForm] = useState<TripFormData>(initialForm);
   const [userInfo, setUserInfo] = useState<UserInfo>(initialUserInfo);
-  const streamRef = useRef("");
-  const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
-  const streamBoxRef = useRef<HTMLPreElement>(null);
-  const planContextRef = useRef({ trip: form, userInfo });
-  planContextRef.current = { trip: form, userInfo };
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     return () => {
-      readerRef.current?.cancel();
+      abortRef.current?.abort();
     };
   }, []);
-
-  useEffect(() => {
-    if (streamBoxRef.current) {
-      streamBoxRef.current.scrollTop = streamBoxRef.current.scrollHeight;
-    }
-  }, [synthesisText]);
-
-  const handleSSEEvent = useCallback(
-    (event: PlanStreamEvent) => {
-      switch (event.type) {
-        case "agent_start":
-          if (!event.agent) break;
-          setAgents((prev) => {
-            if (prev.find((a) => a.id === event.agent)) return prev;
-            return [
-              ...prev,
-              {
-                id: event.agent!,
-                label: AGENT_META[event.agent!]?.label || event.label || event.agent!,
-                status: "running",
-                startedAt: Date.now(),
-              },
-            ];
-          });
-          break;
-
-        case "agent_done":
-          setAgents((prev) =>
-            prev.map((a) =>
-              a.id === event.agent ? { ...a, status: "done", doneAt: Date.now() } : a
-            )
-          );
-          break;
-
-        case "agent_error":
-          setAgents((prev) =>
-            prev.map((a) =>
-              a.id === event.agent ? { ...a, status: "error", doneAt: Date.now() } : a
-            )
-          );
-          break;
-
-        case "synthesis_start":
-          setPhase("streaming");
-          break;
-
-        case "synthesis_chunk":
-          if (event.chunk) {
-            streamRef.current += event.chunk;
-            setSynthesisText(streamRef.current);
-          }
-          break;
-
-        case "done":
-          if (event.itinerary) {
-            const { trip, userInfo: ui } = planContextRef.current;
-            sessionStorage.setItem(
-              "itinerary",
-              JSON.stringify({
-                itinerary: event.itinerary,
-                tripData: trip,
-                userInfo: ui,
-                generatedAt: new Date().toISOString(),
-              })
-            );
-            sessionStorage.setItem("tripData", JSON.stringify(trip));
-            sessionStorage.setItem("userInfo", JSON.stringify(ui));
-            router.push("/itinerary");
-          }
-          break;
-
-        case "error":
-          setError(event.message || "Planning failed.");
-          setPhase("form");
-          setFormStep("about");
-          break;
-      }
-    },
-    [router]
-  );
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -157,11 +73,11 @@ export function useTripPlanner() {
     setFormStep("trip");
   };
 
-  const startPlanStream = async () => {
+  // The backend runs its planning subagents and returns one final itinerary —
+  // a single request/response, no streaming. We show a loader while it works
+  // (worst case ~40s) and navigate once the itinerary lands.
+  const startPlan = useCallback(async () => {
     setError("");
-    setSynthesisText("");
-    streamRef.current = "";
-    setAgents([]);
     setPhase("loading");
 
     const userPayload: UserInfo = {
@@ -169,55 +85,49 @@ export function useTripPlanner() {
       specialRequests: userInfo.specialRequests.map((s) => s.trim()).filter(Boolean),
     };
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
-      const res = await fetch("/api/plan", {
+      if (!API_BASE) throw new Error("NEXT_PUBLIC_TRAVEL_API_URL is not set.");
+
+      const res = await fetch(`${API_BASE}/api/v1/plan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tripData: form, userInfo: userPayload }),
+        signal: controller.signal,
       });
 
-      if (res.status === 429) {
-        const data = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(data.error || "Too many trip plans from this network. Try again in 24 hours.");
-      }
-      if (!res.ok || !res.body) {
-        const errBody = await res.json().catch(() => ({}));
-        const msg =
-          typeof errBody === "object" && errBody && "error" in errBody
-            ? String((errBody as { error?: string }).error)
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+        const fallback =
+          res.status === 429
+            ? "Too many trip plans from this network. Try again later."
             : "Failed to connect to planning service.";
-        throw new Error(msg || "Failed to connect to planning service.");
+        throw new Error(errBody.error || fallback);
       }
 
-      const reader = res.body.getReader();
-      readerRef.current = reader;
-      const decoder = new TextDecoder();
-      let buffer = "";
+      const itinerary = (await res.json()) as Itinerary;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const event = JSON.parse(line.slice(6)) as PlanStreamEvent;
-            handleSSEEvent(event);
-          } catch {
-            // malformed chunk, skip
-          }
-        }
-      }
+      sessionStorage.setItem(
+        "itinerary",
+        JSON.stringify({
+          itinerary,
+          tripData: form,
+          userInfo: userPayload,
+          generatedAt: new Date().toISOString(),
+        })
+      );
+      sessionStorage.setItem("tripData", JSON.stringify(form));
+      sessionStorage.setItem("userInfo", JSON.stringify(userPayload));
+      router.push("/itinerary");
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
       setError(err instanceof Error ? err.message : "Something went wrong.");
       setPhase("form");
       setFormStep("about");
     }
-  };
+  }, [form, userInfo, router]);
 
   const handleAboutSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -227,12 +137,10 @@ export function useTripPlanner() {
       return;
     }
     setFormError("");
-    await startPlanStream();
+    await startPlan();
   };
 
   const today = new Date().toISOString().split("T")[0];
-  const doneCount = agents.filter((a) => a.status === "done").length;
-  const totalAgents = Object.keys(AGENT_META).length;
 
   return {
     phase,
@@ -240,9 +148,6 @@ export function useTripPlanner() {
     form,
     userInfo,
     setUserInfo,
-    agents,
-    synthesisText,
-    streamBoxRef,
     formError,
     error,
     handleChange,
@@ -250,7 +155,5 @@ export function useTripPlanner() {
     handleAboutSubmit,
     handleAboutBack,
     today,
-    doneCount,
-    totalAgents,
   };
 }

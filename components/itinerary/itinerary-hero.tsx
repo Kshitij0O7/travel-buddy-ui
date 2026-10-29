@@ -2,7 +2,24 @@ import type { Itinerary } from "../../interfaces/itinerary";
 
 type Props = { itinerary: Itinerary; onNewTrip: () => void };
 
+/** Overall min/max across the weather summary, rounded. */
+function weatherRange(itinerary: Itinerary): string | null {
+  const summary = itinerary.weather?.summary;
+  if (!summary?.length) return null;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const d of summary) {
+    if (typeof d.minTemp === "number") min = Math.min(min, d.minTemp);
+    if (typeof d.maxTemp === "number") max = Math.max(max, d.maxTemp);
+  }
+  if (!isFinite(min) || !isFinite(max)) return null;
+  return `${Math.round(min)}° – ${Math.round(max)}°C`;
+}
+
 export function ItineraryHero({ itinerary, onNewTrip }: Props) {
+  const range = weatherRange(itinerary);
+  const kind = itinerary.weather?.dataType === "historical" ? "Typical for these dates" : "Forecast";
+
   return (
     <div className="mx-auto max-w-[860px] animate-tb-fade-up px-6 pb-8 pt-6">
       <button
@@ -17,16 +34,16 @@ export function ItineraryHero({ itinerary, onNewTrip }: Props) {
       </div>
       <div className="mb-5 text-[0.78rem] uppercase tracking-[0.15em] text-tb-muted">
         {itinerary.duration} · {itinerary.days?.length} days planned
+        {itinerary.isMultiCity && itinerary.keyCities?.length
+          ? ` · ${itinerary.keyCities.join(" → ")}`
+          : ""}
       </div>
-      <p className="max-w-[620px] text-[0.95rem] font-light leading-loose text-[rgb(245_240_232/0.7)]">{itinerary.summary}</p>
-      {itinerary.weather && (
-        <div className="my-7 flex flex-wrap items-start gap-8 rounded-sm border border-tb-border border-l-[3px] border-l-tb-amber bg-tb-amber-dim px-5 py-4">
-          <div className="whitespace font-display text-[1.8rem] font-light text-tb-amber-light">
-            {itinerary.weather.temperature}
-          </div>
-          <div className="min-w-[200px] flex-1">
-            <div className="mb-1 text-[0.88rem] text-tb-white">{itinerary.weather.summary}</div>
-            <div className="text-[0.78rem] text-tb-muted">{itinerary.weather.advice}</div>
+      {range && (
+        <div className="my-7 flex flex-wrap items-center gap-6 rounded-sm border border-tb-border border-l-[3px] border-l-tb-amber bg-tb-amber-dim px-5 py-4">
+          <div className="font-display text-[1.8rem] font-light text-tb-amber-light">{range}</div>
+          <div className="text-[0.72rem] uppercase tracking-[0.18em] text-tb-muted">
+            {kind}
+            {itinerary.weather?.location ? ` · ${itinerary.weather.location}` : ""}
           </div>
         </div>
       )}

@@ -25,6 +25,16 @@
   --animate-tb-fade-up: tb-fade-up 0.45s ease both;
   --animate-tb-slide-up: tb-slide-up 0.25s ease;
   --animate-tb-typing: tb-typing-bounce 1.2s ease infinite;
+  --animate-tb-indeterminate: tb-indeterminate 1.4s ease-in-out infinite;
+}
+
+@keyframes tb-indeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(420%);
+  }
 }
 
 @keyframes tb-shimmer {

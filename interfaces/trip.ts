@@ -12,20 +12,3 @@ export interface TripFormData {
   seniors: number;
   budget: string;
 }
-
-export interface AgentStatus {
-  id: string;
-  label: string;
-  status: "pending" | "running" | "done" | "error";
-  startedAt?: number;
-  doneAt?: number;
-}
-
-export type PlanStreamEvent = {
-  type: string;
-  agent?: string;
-  label?: string;
-  chunk?: string;
-  itinerary?: unknown;
-  message?: string;
-};
